@@ -1,0 +1,29 @@
+{
+  "date": "2026-10-22",
+  "module_version": "3.1.0-fork2",
+  "tested_profiles": [
+    "PHP 7.3.33 NTS/non-debug Apache/prefork Debian 10",
+    "PHP 7.4.33 NTS/non-debug Apache/prefork Debian 10"
+  ],
+  "module_checks": {
+    "php73": 103,
+    "php74": 103
+  },
+  "installer_checks": {
+    "php73": 25,
+    "php74": 25
+  },
+  "unit_tests": 40,
+  "installer_unit_tests": 36,
+  "arithmetic_unit_tests": 4,
+  "arithmetic_random_cases_per_parser": 10000,
+  "non_root_build_helpers": {
+    "php73": "PASS",
+    "php74": "PASS"
+  },
+  "production_servers_changed": false,
+  "engine_patch_equivalence_proven": false,
+  "systemd_tested": false,
+  "service_test_note": "Actual Apache and filesystem in containers; systemctl test shim delegates to apache2ctl; no host services changed.",
+  "historical_fork1_reports": "Preserved separately; fork2 does not inherit proof of complete engine remediation."
+}

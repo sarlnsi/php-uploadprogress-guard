@@ -1,4 +1,4 @@
-INSTALLATION — MODULE 3.1.0-fork1 — 22 OCTOBRE 2026
+INSTALLATION — MODULE 3.1.0-fork2 — 22 OCTOBRE 2026
 
 CVE VISÉES
 CVE-2026-109618 : corruption mémoire lors d’un manque de mémoire (OOM).
@@ -7,15 +7,38 @@ Le module essaie de réduire certains chemins de ces deux CVE. Il ne certifie
 pas le correctif complet du moteur PHP. Voir README.md et AUDIT.txt.
 
 PRÉREQUIS ET PORTÉE
-Profil : Linux, PHP 7.4.33 NTS non-debug, Apache mod_php/prefork. Les essais
-utilisent les images officielles Debian 10 et 11 ; ils ne reproduisent pas
+Profil : Linux, PHP 7.3.x ou 7.4.33 NTS non-debug, Apache mod_php/prefork.
+La version fork2 est testée sur 7.3.33 et 7.4.33 dans Debian 10 ; fork1 avait
+aussi été testé sur 7.4.33/Debian 11. Ces essais ne reproduisent pas
 vos paquets fournisseur ni votre application. Tester sur clone d’abord.
-Python >= 3.7, GCC, make, autoconf, binutils et développement PHP 7.4.33 exact.
+Python >= 3.7, GCC, make, autoconf, binutils et outils/en-têtes correspondant exactement au PHP installé.
 Ne pas mélanger des dépôts ou migrer PHP pour obtenir les en-têtes manquants.
 L’installateur ne lance ni APT ni compilation sous root. Il ne touche qu’à
-Apache ; un pool PHP 7.4 FPM actif est refusé.
+Apache ; un pool FPM actif de la branche ciblée est refusé.
 
-1. RÉCUPÉRER ET CONSTRUIRE
+CHOISIR LA BRANCHE
+PHP 7.3 : build_php73.py / install_php73.py, CLI /usr/bin/php7.3,
+INI /etc/php/7.3/apache2/conf.d/99-hp-guard.ini, API 20180731.
+PHP 7.4 : build_php74.py / install_php74.py, CLI /usr/bin/php7.4,
+INI /etc/php/7.4/apache2/conf.d/99-hp-guard.ini, API 20190902.
+Garder le checkout complet : les scripts partagent des contrôles communs.
+PHP 7.3.x est accepté avec correspondance exacte des versions (suffixe fournisseur
+compris) entre outils, CLI et Apache ; seuls les essais sur 7.3.33 sont rapportés.
+Tester votre version fournisseur sur clone. Aucun binaire d’une autre branche.
+
+PARCOURS PHP 7.3
+En compte non root :
+    python3 tools/build_php73.py --php /usr/bin/php7.3 --phpize /usr/bin/phpize7.3 --php-config /usr/bin/php-config7.3 --output /var/tmp/hp-guard-build73
+Plan sans modification :
+    python3 tools/install_php73.py install --build /var/tmp/hp-guard-build73 --probe-url https://VOTRE_SITE/hp-guard-probe.php --probe-file /var/www/VOTRE_SITE/hp-guard-probe.php
+Application en maintenance (arrêt/redémarrage Apache) :
+    sudo python3 tools/install_php73.py install --build /var/tmp/hp-guard-build73 --probe-url https://VOTRE_SITE/hp-guard-probe.php --probe-file /var/www/VOTRE_SITE/hp-guard-probe.php --apply
+Retour arrière de cette installation :
+    sudo python3 tools/install_php73.py rollback --transaction /var/backups/hp-guard/TRANSACTION --apply
+Les étapes détaillées suivantes sont identiques pour 7.3, en remplaçant les noms
+74/7.4 par 73/7.3 et le répertoire de build par hp-guard-build73.
+
+1. RÉCUPÉRER ET CONSTRUIRE (EXEMPLE PHP 7.4)
 
     git clone https://github.com/sarlnsi/php-uploadprogress-guard.git
     cd php-uploadprogress-guard
@@ -59,19 +82,21 @@ valide. Elle crée une sonde avec un jeton aléatoire root:groupe-web 0640 dans
 Les contrôles n’utilisent que des GET administratifs : aucun exploit, upload,
 OOM ou test de crash n’est envoyé au serveur.
 
-Avant changement : contrôle du PHP 7.4.33 NTS/non-debug réellement servi, de son
+Avant changement : contrôle de la version exacte du PHP NTS/non-debug servi, de son
 module moteur chargé et de son ABI ; comparaison au build. Le profil strict
 exige une limite mémoire finie et mbstring.encoding_translation désactivé.
 Le script refuse ces écarts et ne modifie pas les autres atténuations existantes.
 Une configuration de module déjà présente et étrangère n’est jamais écrasée.
+Un ancien fork1 doit être retiré par retour arrière de sa transaction avant
+installation du fork2 ; reconstruire avec cette révision, sans ancien manifeste.
 Si open_basedir, /proc, le TLS ou les permissions bloquent la sonde, le contrôle
 échoue : ne pas désactiver globalement vos protections pour forcer l’installation.
 
 Sauvegardes et état : /var/backups/hp-guard/<transaction>/, root privé.
-Le module est copié sous /opt/hp-guard/3.1.0-fork1/<empreinte>/.
+Le module est copié sous /opt/hp-guard/3.1.0-fork2/<empreinte>/.
 Le nouvel INI contient :
 
-    extension=/opt/hp-guard/3.1.0-fork1/<empreinte>/hp_uploadprogress_guard.so
+    extension=/opt/hp-guard/3.1.0-fork2/<empreinte>/hp_uploadprogress_guard.so
     hp_uploadprogress_guard.mode=parse
     hp_uploadprogress_guard.detach_upload_progress=1
     hp_uploadprogress_guard.force_unlimited_memory=0
@@ -92,7 +117,7 @@ strict ne doit pas être forcé dans ce cas ; vérifier la provenance du paquet.
 
 Valider ensuite les parcours applicatifs normaux : authentification, sessions,
 formulaires, uploads, traitements différés et erreurs. Ne pas lancer le script
-lab_php74.py ou le module observer.c sur un serveur exposé.
+lab_php73.py, lab_php74.py ou le module observer.c sur un serveur exposé.
 
 4. ÉCHEC OU RETOUR ARRIÈRE
 

@@ -8,11 +8,13 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'tools'))
 spec = importlib.util.spec_from_file_location('installer', str(ROOT / 'tools/install_php74.py'))
 installer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(installer)
@@ -45,6 +47,9 @@ class FakeApache:
 
 
 class InstallerTests(unittest.TestCase):
+    branch = '7.4'
+    api = '20190902'
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -55,16 +60,16 @@ class InstallerTests(unittest.TestCase):
         self.module.write_bytes(b'unit-test-module')
         self.digest = installer.sha(self.module)
         self.manifest = {'kind': 'additional-mitigation-not-engine-patch', 'version': installer.VERSION,
-            'php_api': '20190902', 'php': {'major': 7, 'minor': 4, 'release': 33, 'zts': 0, 'debug': 0, 'word_bytes': 8},
-            'module_sha256': self.digest, 'source_sha256': {n: installer.sha(ROOT/'src'/n) for n in installer.SOURCE_FILES}}
+            'php_api': self.api, 'php': {'version': self.branch + '.33', 'major': 7, 'minor': int(self.branch[-1]), 'release': 33, 'zts': 0, 'debug': 0, 'word_bytes': 8},
+            'module_sha256': self.digest, 'source_sha256': {n: installer.sha(ROOT/'src'/n) for n in installer.source_files(self.branch)}}
         (self.build/'manifest.json').write_text(json.dumps(self.manifest))
         self.ini = self.base/'conf'/'99-hp-guard.ini'
         self.ini.parent.mkdir()
-        self.engine = self.base/'libphp7.4.so'
+        self.engine = self.base/('libphp' + self.branch + '.so')
         self.engine.write_bytes(b'test-engine')
         self.args = argparse.Namespace(build=str(self.build), probe_url='http://127.0.0.1/probe.php',
-            probe_file=str(self.base/'probe.php'), ini_file=str(self.ini), php='/usr/bin/php', web_group='www-data', apply=True)
-        self.before = {'version': '7.4.33', 'sapi': 'apache2handler', 'php_zts': '0', 'php_debug': '0',
+            probe_file=str(self.base/'probe.php'), ini_file=str(self.ini), php='/usr/bin/php', web_group='www-data', apply=True, php_branch=self.branch)
+        self.before = {'version': self.branch + '.33', 'sapi': 'apache2handler', 'php_zts': '0', 'php_debug': '0',
             'php_word_bytes': '8', 'image_path': str(self.engine), 'image_consistent': '1',
             'image_sha256': installer.sha(self.engine), 'extensions': 'Core,session',
             'memory_limit': '128M', 'mbstring_encoding_translation': ''}
@@ -74,7 +79,7 @@ class InstallerTests(unittest.TestCase):
             guard_mapping_consistent='1', guard_module_sha256=self.digest, upload_progress='0',
             extensions='Core,session,hp_uploadprogress_guard')
         self.service = FakeApache()
-        self.cli_flags = b'7.4.33:0:0:8'
+        self.cli_flags = (self.branch + '.33:0:0:8').encode()
 
     @contextlib.contextmanager
     def simulated_host(self, after=None):
@@ -87,7 +92,7 @@ class InstallerTests(unittest.TestCase):
                 return subprocess.CompletedProcess(argv, 3, b'', b'')
             if '-r' in argv:
                 return subprocess.CompletedProcess(argv, 0, self.cli_flags, b'')
-            return subprocess.CompletedProcess(argv, 0, b'version => 3.1.0-fork1', b'')
+            return subprocess.CompletedProcess(argv, 0, ('version => ' + installer.VERSION).encode(), b'')
         @contextlib.contextmanager
         def probe(args):
             yield self.base/'unused.token'
@@ -183,7 +188,7 @@ class InstallerTests(unittest.TestCase):
             installer.install(self.args)
 
     def test_mismatched_cli_is_refused_before_stop(self):
-        self.cli_flags = b'7.4.32:0:0:8'
+        self.cli_flags = (self.branch + '.32:0:0:8').encode()
         with self.simulated_host():
             with self.assertRaisesRegex(RuntimeError, 'Selected CLI'):
                 installer.install(self.args)
@@ -207,6 +212,57 @@ class InstallerTests(unittest.TestCase):
                     raise RuntimeError('test failure')
         self.assertFalse(Path(self.args.probe_file).exists())
         self.assertFalse(list(self.base.glob('hp-guard-probe-*.token')))
+
+    def test_other_branch_build_is_refused_without_service_changes(self):
+        self.args.php_branch = '7.3' if self.branch == '7.4' else '7.4'
+        with self.simulated_host():
+            with self.assertRaisesRegex(RuntimeError, 'expected PHP'):
+                installer.install(self.args)
+        self.assertEqual(self.service.events, [])
+
+    def test_vendor_version_mismatch_is_refused(self):
+        self.before['version'] += '-other-vendor'
+        with self.simulated_host():
+            with self.assertRaisesRegex(RuntimeError, 'exact PHP version'):
+                installer.install(self.args)
+        self.assertNotIn('stop', self.service.events)
+
+    def test_runtime_checker_refuses_other_branch(self):
+        other = '7.3.33' if self.branch == '7.4' else '7.4.33'
+        checks = installer.checker.runtime_checks(dict(self.after, version=other), self.digest, self.manifest['php'])
+        self.assertFalse(checks['php_matches_build'])
+
+    def test_cli_entrypoint_uses_target_branch_ini_default(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            installer.main(['install', '--build', str(self.build), '--probe-url', self.args.probe_url,
+                            '--probe-file', self.args.probe_file], branch=self.branch)
+        plan = json.loads(output.getvalue())
+        self.assertEqual(plan['ini_file'], '/etc/php/' + self.branch + '/apache2/conf.d/99-hp-guard.ini')
+        self.assertEqual(plan['php_api'], self.api)
+        self.assertFalse(plan['changes_applied'])
+
+    def test_matching_vendor_suffix_is_accepted(self):
+        version = self.branch + '.33-1+vendor'
+        self.manifest['php']['version'] = version
+        (self.build/'manifest.json').write_text(json.dumps(self.manifest))
+        self.before['version'] = self.after['version'] = version
+        self.cli_flags = (version + ':0:0:8').encode()
+        with self.simulated_host():
+            self.assertEqual(installer.install(self.args), 0)
+
+    def test_development_api_mismatch_is_refused(self):
+        self.manifest['php_api'] = '20190902' if self.branch == '7.3' else '20180731'
+        (self.build/'manifest.json').write_text(json.dumps(self.manifest))
+        with self.simulated_host():
+            with self.assertRaisesRegex(RuntimeError, 'expected PHP'):
+                installer.install(self.args)
+        self.assertEqual(self.service.events, [])
+
+
+class InstallerPHP73Tests(InstallerTests):
+    branch = '7.3'
+    api = '20180731'
 
 
 if __name__ == '__main__':

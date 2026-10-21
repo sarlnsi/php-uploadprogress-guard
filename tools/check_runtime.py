@@ -8,6 +8,7 @@ import re
 import secrets
 import urllib.parse
 import urllib.request
+from php_profiles import MODULE_VERSION, matches_runtime
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -50,17 +51,17 @@ def fetch_probe(value, token_file):
     return info
 
 
-def runtime_checks(info, digest):
+def runtime_checks(info, digest, expected_php):
     if not re.fullmatch(r'[0-9a-f]{64}', digest):
         raise ValueError('Invalid manifest digest.')
     required = ['guard_mitigation_only', 'guard_multipart_handler_active',
                 'guard_allocation_error_callback_active', 'guard_sapi_deactivate_wrapper_active',
                 'guard_upload_progress_callback_absent', 'guard_mapping_consistent']
     checks = {key: info.get(key) == '1' for key in required}
-    checks.update({'php_7433': bool(re.fullmatch(r'7\.4\.33(?:[-+].*)?', info.get('version', ''))),
+    checks.update({'php_matches_build': matches_runtime(info.get('version', ''), expected_php),
                    'apache_mod_php': info.get('sapi') == 'apache2handler',
                    'module_matches_build': info.get('guard_module_sha256') == digest,
-                   'fork_version': info.get('guard_version') == '3.1.0-fork1',
+                   'fork_version': info.get('guard_version') == MODULE_VERSION,
                    'mode_parse': info.get('guard_mode') == 'parse',
                    'native_multibyte_fallback_disabled': info.get('mbstring_encoding_translation') in ('', '0'),
                    'finite_memory_limit': bool(re.fullmatch(r'[1-9]\d*[KMG]?', info.get('memory_limit', ''), re.I)),
@@ -76,7 +77,7 @@ def main():
     args = parser.parse_args()
     manifest = json.loads(Path(args.manifest).read_text())
     info = fetch_probe(args.url, args.token_file)
-    checks = runtime_checks(info, manifest['module_sha256'])
+    checks = runtime_checks(info, manifest['module_sha256'], manifest['php'])
     passed = all(checks.values())
     print(json.dumps({'verdict': 'MITIGATION_OBSERVEE_CORRECTIF_MOTEUR_NON_ATTESTE' if passed else 'NON_VALIDE',
                       'checks': checks, 'runtime': info,

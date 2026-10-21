@@ -21,13 +21,13 @@ import subprocess
 import sys
 import time
 import uuid
+from php_profiles import MODULE_VERSION, PROFILES, source_files, valid_php, matches_runtime
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKUPS = Path('/var/backups/hp-guard')
 PREFIX = Path('/opt/hp-guard')
 RUN = Path('/run')
-VERSION = '3.1.0-fork1'
-SOURCE_FILES = ['hp_uploadprogress_guard.c', 'config.m4', 'rfc1867/rfc1867_copy-7.4.c']
+VERSION = MODULE_VERSION
 spec = importlib.util.spec_from_file_location('hp_guard_checker', str(ROOT / 'tools/check_runtime.py'))
 checker = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(checker)
@@ -115,15 +115,15 @@ class Apache:
         require(self.active(), 'Apache did not become active.')
 
 
-def read_build(directory):
+def read_build(directory, branch='7.4'):
     directory = directory.resolve(strict=True)
     manifest = json.loads((directory / 'manifest.json').read_text())
     require(manifest.get('kind') == 'additional-mitigation-not-engine-patch' and manifest.get('version') == VERSION,
-            'Unknown build manifest; use tools/build_php74.py from this revision.')
+            'Unknown build manifest; rebuild using this revision.')
     info = manifest['php']
-    require([info.get(k) for k in ['major', 'minor', 'release', 'zts', 'debug']] == [7, 4, 33, 0, 0]
-            and manifest.get('php_api') == '20190902', 'Build is not PHP 7.4.33 NTS/non-debug.')
-    for name in SOURCE_FILES:
+    require(valid_php(info, branch) and manifest.get('php_api') == PROFILES[branch]['api'],
+            'Build is not the expected PHP ' + branch + ' NTS/non-debug ABI.')
+    for name in source_files(branch):
         require(manifest.get('source_sha256', {}).get(name) == sha(ROOT / 'src' / name),
                 'Build source differs from this checkout: ' + name)
     module = directory / 'hp_uploadprogress_guard.so'
@@ -160,8 +160,8 @@ def temporary_probe(args):
 
 
 def inspect_before(info, manifest):
-    require(re.fullmatch(r'7\.4\.33(?:[-+].*)?', info.get('version', '')) and info.get('sapi') == 'apache2handler',
-            'The URL does not serve PHP 7.4.33 mod_php.')
+    require(matches_runtime(info.get('version', ''), manifest['php']) and info.get('sapi') == 'apache2handler',
+            'The URL does not serve the exact PHP version of this mod_php build.')
     require(info.get('php_zts') == '0' and info.get('php_debug') == '0'
             and info.get('php_word_bytes') == str(manifest['php']['word_bytes']), 'Web PHP ABI differs from this build.')
     image = Path(info.get('image_path', ''))
@@ -194,7 +194,8 @@ def restore(transaction, service):
 
 
 def install(args):
-    manifest, module = read_build(Path(args.build))
+    branch = getattr(args, 'php_branch', '7.4')
+    manifest, module = read_build(Path(args.build), branch)
     checker.validate_url(args.probe_url)
     ini = Path(args.ini_file)
     probe = Path(args.probe_file)
@@ -203,7 +204,8 @@ def install(args):
     destination = PREFIX / VERSION / digest[:16] / 'hp_uploadprogress_guard.so'
     plan = {'action': 'install', 'cves': ['CVE-2026-109618', 'CVE-2026-109619'], 'module_sha256': digest,
             'module_destination': str(destination), 'ini_file': str(ini), 'temporary_probe': str(probe),
-            'service': 'apache2.service', 'changes_applied': False,
+            'service': 'apache2.service', 'php_version': manifest['php']['version'],
+            'php_api': manifest['php_api'], 'changes_applied': False,
             'scope': 'Additional mitigation; not attestation of the complete engine patch.'}
     if not args.apply:
         print(json.dumps(plan, ensure_ascii=False, indent=2))
@@ -213,21 +215,21 @@ def install(args):
     secure_directory(ini.parent)
     service = Apache()
     require(service.active(), 'Apache must be running before this controlled install.')
-    require(run([service.systemctl, 'is-active', 'php7.4-fpm.service'], check=False).returncode != 0,
-            'PHP 7.4 FPM is active too; a dedicated multi-SAPI procedure is required.')
+    require(run([service.systemctl, 'is-active', 'php' + branch + '-fpm.service'], check=False).returncode != 0,
+            'PHP ' + branch + ' FPM is active too; a dedicated multi-SAPI procedure is required.')
     service.configtest()
     php = Path(args.php).resolve(strict=True)
     secure_file(php)
-    flags = run([php, '-n', '-r', "echo PHP_MAJOR_VERSION,'.',PHP_MINOR_VERSION,'.',PHP_RELEASE_VERSION,':',(int)PHP_ZTS,':',(int)PHP_DEBUG,':',PHP_INT_SIZE;"])
-    require(not flags.stderr and flags.stdout.decode().split(':') == ['7.4.33', '0', '0', str(manifest['php']['word_bytes'])],
-            'Selected CLI is not PHP 7.4.33 NTS/non-debug with the expected word size.')
+    flags = run([php, '-n', '-r', "echo PHP_VERSION,':',(int)PHP_ZTS,':',(int)PHP_DEBUG,':',PHP_INT_SIZE;"])
+    require(not flags.stderr and flags.stdout.decode().split(':') == [manifest['php']['version'], '0', '0', str(manifest['php']['word_bytes'])],
+            'Selected CLI differs from the build version/ABI.')
     with temporary_probe(args) as token:
         before = checker.fetch_probe(args.probe_url, token)
         inspect_before(before, manifest)
         existing = before.get('guard_version')
         if ini.exists() or ini.is_symlink() or existing:
             require(ini.is_file() and not ini.is_symlink(), 'Existing module/configuration requires manual review.')
-            require('hp-guard installer v1' in ini.read_text() and all(checker.runtime_checks(before, digest).values()),
+            require('hp-guard installer v1' in ini.read_text() and all(checker.runtime_checks(before, digest, manifest['php']).values()),
                     'An existing module/INI differs; this installer does not overwrite it.')
             print('ALREADY_INSTALLED_AND_OBSERVED: ' + str(ini))
             return 0
@@ -260,7 +262,7 @@ def install(args):
         save(transaction / 'transaction.json', state)
         service.log = transaction / 'install.log'
         # The installer changes only this new INI; retain all existing PHP/Apache configuration as evidence.
-        config_paths = [p for p in ['/etc/php/7.4/apache2', '/etc/apache2'] if Path(p).is_dir()]
+        config_paths = [p for p in ['/etc/php/' + branch + '/apache2', '/etc/apache2'] if Path(p).is_dir()]
         run(['tar', '-czf', transaction / 'configuration.tar.gz'] + config_paths, service.log)
         print('TRANSACTION: ' + str(transaction), flush=True)
         try:
@@ -273,7 +275,7 @@ def install(args):
             for _ in range(10):
                 try:
                     info = checker.fetch_probe(args.probe_url, token)
-                    checks = checker.runtime_checks(info, digest)
+                    checks = checker.runtime_checks(info, digest, manifest['php'])
                     require(all(checks.values()), 'Runtime verification failed: ' + ','.join(k for k, v in checks.items() if not v))
                     require(info.get('image_sha256') == before['image_sha256'], 'PHP engine changed during installation.')
                     require(set(info.get('extensions', '').split(',')) == set(before['extensions'].split(',')) | {'hp_uploadprogress_guard'},
@@ -303,26 +305,27 @@ def install(args):
                 print('ROLLBACK_INCOMPLETE_APACHE_STOP_REQUESTED: ' + str(transaction) + '; ' + str(exc), file=sys.stderr)
             raise
         print('MITIGATION_INSTALLED_AND_OBSERVED; complete engine patch not attested.')
-        print('Rollback: sudo python3 tools/install_php74.py rollback --transaction ' + str(transaction) + ' --apply')
+        print('Rollback: sudo python3 tools/install_php' + branch.replace('.', '') + '.py rollback --transaction ' + str(transaction) + ' --apply')
     return 0
 
 
-def main(argv=None):
+def main(argv=None, branch='7.4'):
     os.umask(0o077)
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description='PHP ' + branch + ' Apache mitigation; plan unless --apply.')
     sub = parser.add_subparsers(dest='command', required=True)
     p = sub.add_parser('install', help='Show a plan, or install with --apply')
     p.add_argument('--build', required=True)
     p.add_argument('--probe-url', required=True)
     p.add_argument('--probe-file', required=True)
-    p.add_argument('--ini-file', default='/etc/php/7.4/apache2/conf.d/99-hp-guard.ini')
-    p.add_argument('--php', default='/usr/bin/php7.4')
+    p.add_argument('--ini-file', default='/etc/php/' + branch + '/apache2/conf.d/99-hp-guard.ini')
+    p.add_argument('--php', default='/usr/bin/php' + branch)
     p.add_argument('--web-group', default='www-data')
     p.add_argument('--apply', action='store_true')
     p = sub.add_parser('rollback', help='Remove only the INI created by a verified transaction')
     p.add_argument('--transaction', required=True)
     p.add_argument('--apply', action='store_true')
     args = parser.parse_args(argv)
+    args.php_branch = branch
     if not args.apply:
         if args.command == 'install':
             return install(args)

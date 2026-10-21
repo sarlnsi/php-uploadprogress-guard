@@ -1,0 +1,24 @@
+{
+  "kind": "additional-mitigation-not-engine-patch",
+  "version": "3.1.0-fork2",
+  "php": {
+    "version": "7.3.33",
+    "major": 7,
+    "minor": 3,
+    "release": 33,
+    "zts": 0,
+    "debug": 0,
+    "word_bytes": 8
+  },
+  "php_api": "20180731",
+  "config_version": "7.3.33",
+  "module_sha256": "973e8b990993f242822f7176a1932f4bb0a933234efed7e2f012cd376c3b3c99",
+  "source_sha256": {
+    "hp_uploadprogress_guard.c": "6797403b3a3f67df69520264c0d969c479e9e901e0d59ab8bca625a8b754be20",
+    "config.m4": "bb8d8c97f8a7ede9011b331e9445aba4b17f10360e69c0cb253c173b347184bd",
+    "rfc1867/rfc1867_copy-7.3.c": "4903a8f11214e9b16f3daf7fcc3594b028574c9928d1c79d150a7a2efe33e29e"
+  },
+  "max_glibc_symbol": "2.14",
+  "production_installation_performed": false,
+  "note": "Actual non-root build on Debian 10 in no-network container; no host installation."
+}

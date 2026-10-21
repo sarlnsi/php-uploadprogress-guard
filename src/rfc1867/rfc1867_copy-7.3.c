@@ -63,8 +63,8 @@ static php_rfc1867_basename_t php_rfc1867_basename = NULL;
 static int (*_hp_dead_cb)(unsigned int, void *, void **) = NULL;
 #define php_rfc1867_callback _hp_dead_cb
 
-/* hp_uploadprogress_guard v3: this parser never exhausts memory_limit, so the pre-RINIT out-of-memory
- * bailout that CVE-2026-109618 is built on cannot be reached through multipart input. zend_memory_usage(1)
+/* Headroom checks reduce predictable allocation failures while parsing multipart input. They are
+ * estimates, not a proof against every engine or operating-system allocation failure. zend_memory_usage(1)
  * is the figure the allocator compares with the limit. HP_MEM_SLACK covers the chunk the next small
  * allocation may need; an eighth of the limit (at least 4 MB) stays free for RINIT and the script. When a
  * step would cross that line the request is stopped, everything parsed so far is dropped and the response
@@ -84,8 +84,15 @@ static int hp_mem_room(size_t need)
 	limit = (size_t) PG(memory_limit);
 	reserve = limit / 8 < HP_MEM_SLACK ? HP_MEM_SLACK : limit / 8;
 	used = zend_memory_usage(1);
+	/* Do not let a size_t addition wrap and turn a failed bounds check into success. */
+	if (need > (size_t)-1 - (HP_MEM_CHUNK - 1)) {
+		return 0;
+	}
 	need = (need + HP_MEM_CHUNK - 1) & ~(HP_MEM_CHUNK - 1);
-	return used + need + HP_MEM_SLACK + reserve <= limit;
+	if (used > limit || reserve > limit - used || HP_MEM_SLACK > limit - used - reserve) {
+		return 0;
+	}
+	return need <= limit - used - reserve - HP_MEM_SLACK;
 }
 
 static void hp_drop_request(zval *post_array)
@@ -99,7 +106,7 @@ static void hp_drop_request(zval *post_array)
 		zend_hash_clean(Z_ARRVAL(PG(http_globals)[TRACK_VARS_FILES]));
 	}
 	SG(sapi_headers).http_response_code = 413;
-	snprintf(msg, sizeof(msg), "hp_uploadprogress_guard: multipart body dropped, memory headroom exhausted "
+	snprintf(msg, sizeof(msg), "hp_uploadprogress_guard: multipart body dropped, parser resource limit reached "
 		"(memory_limit=%ld post_max_size=%ld read=%ld); request answered 413",
 		(long) PG(memory_limit), (long) SG(post_max_size), (long) SG(read_post_bytes));
 	php_log_err(msg);
@@ -806,6 +813,7 @@ SAPI_POST_HANDLER_FUNC(hp_rfc1867_post_handler) /* {{{ */
 
 	hp_stopped = 0;
 	if (SG(post_max_size) > 0 && SG(request_info).content_length > SG(post_max_size)) {
+		SG(sapi_headers).http_response_code = 413;
 		sapi_module.sapi_error(E_WARNING, "POST Content-Length of " ZEND_LONG_FMT " bytes exceeds the limit of " ZEND_LONG_FMT " bytes", SG(request_info).content_length, SG(post_max_size));
 		return;
 	}
@@ -905,6 +913,7 @@ SAPI_POST_HANDLER_FUNC(hp_rfc1867_post_handler) /* {{{ */
 			int end = 0;
 
 			if (--body_parts_cnt < 0) {
+				hp_stopped = 1;
 				php_error_docref(NULL, E_WARNING, "Multipart body parts limit exceeded %d. To increase the limit change max_multipart_body_parts in php.ini.", body_parts_limit);
 				goto fileupload_done;
 			}
@@ -1409,6 +1418,7 @@ SAPI_POST_HANDLER_FUNC(hp_rfc1867_post_handler) /* {{{ */
 fileupload_done:
 	if (SG(post_max_size) > 0 && SG(read_post_bytes) > SG(post_max_size)) {
 		sapi_module.sapi_error(E_WARNING, "Actual POST length does not match Content-Length, and exceeds %ld bytes", (long) SG(post_max_size));
+		hp_stopped = 1;
 	}
 	if (php_rfc1867_callback != NULL) {
 		multipart_event_end event_end;

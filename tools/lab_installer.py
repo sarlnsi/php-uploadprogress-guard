@@ -26,8 +26,12 @@ def main():
     p.add_argument('--build', required=True)
     p.add_argument('--python-runtime', required=True)
     p.add_argument('--output', required=True)
-    p.add_argument('--image', default=IMAGE)
+    p.add_argument('--branch', choices=['7.3', '7.4'], default='7.4')
+    p.add_argument('--image')
     args = p.parse_args()
+    if args.image is None:
+        args.image = ('php:7.3-apache-buster@sha256:a1d6e762bce1641a3098dd737843d1322220965c6fd4030bd4f706366d9a13da'
+                      if args.branch == '7.3' else IMAGE)
     output = Path(args.output).resolve()
     output.mkdir(mode=0o700, parents=True)
     build = output/'build'
@@ -70,7 +74,7 @@ def main():
     def exists(path):
         return command_python('from pathlib import Path; print(Path({!r}).exists())'.format(path)).strip() == 'True'
     def installer(*extra, check=True):
-        r = docker('exec', name, py, '/repo/tools/install_php74.py', *extra, check=False)
+        r = docker('exec', name, py, '/repo/tools/install_php' + args.branch.replace('.', '') + '.py', *extra, check=False)
         with (output/'installer-output.txt').open('ab') as f:
             f.write(r.stdout+r.stderr)
         if check and r.returncode:
@@ -118,7 +122,7 @@ def main():
         for path in state_files():
             state = json.loads(command_python('from pathlib import Path; print(Path({!r}).read_text())'.format(path)))
             verify('transaction_rolled_back', state['status'] == 'rolled_back')
-        report = {'image': args.image, 'checks': results, 'host_services_changed': False,
+        report = {'image': args.image, 'php_branch': args.branch, 'checks': results, 'host_services_changed': False,
                   'note': 'Real Apache/module/filesystem in container; systemctl is a test shim, not systemd.'}
         (output/'report.json').write_text(json.dumps(report, indent=2)+'\n')
         print(json.dumps({'passed': len(results), 'report': str(output/'report.json')}, indent=2))

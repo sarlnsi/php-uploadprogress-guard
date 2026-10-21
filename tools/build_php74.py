@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+from php_profiles import MODULE_VERSION, PROFILES, source_files, valid_php
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -23,13 +24,13 @@ def call(args, log=None):
     return r.stdout.decode()
 
 
-def main():
-    p = argparse.ArgumentParser(description=__doc__)
+def main(argv=None, branch='7.4'):
+    p = argparse.ArgumentParser(description='Build for PHP ' + branch + '; never installs.')
     p.add_argument('--php', required=True)
     p.add_argument('--phpize', required=True)
     p.add_argument('--php-config', required=True)
     p.add_argument('--output', required=True, help='New directory; compile as a non-root user')
-    args = p.parse_args()
+    args = p.parse_args(argv)
     if os.geteuid() == 0:
         p.error('Compile as a non-root user; nothing needs to be installed by this script.')
     for key in ['php', 'phpize', 'php_config']:
@@ -46,8 +47,8 @@ def main():
         p.error('Unexpected target CLI response.')
     info = dict(zip(['version', 'major', 'minor', 'release', 'zts', 'debug', 'word_bytes'],
                     [fields[0]] + [int(value) for value in fields[1:]]))
-    if [info['major'], info['minor'], info['release']] != [7, 4, 33] or info['zts'] or info['debug']:
-        p.error('This deployment helper supports PHP 7.4.33 NTS non-debug only.')
+    if not valid_php(info, branch):
+        p.error('Expected PHP ' + branch + ('.33' if branch == '7.4' else '.x') + ' NTS non-debug.')
     config_version = call([args.php_config, '--version']).strip()
     if config_version != info['version']:
         p.error('php-config and the target CLI do not report the same PHP version.')
@@ -58,7 +59,7 @@ def main():
         p.error('Cannot identify the installed development headers API.')
     api = match.group(1)
     phpize_info = call([args.phpize, '--version'])
-    if api != '20190902' or not re.search(r'Zend Module Api No:\s+20190902\b', phpize_info):
+    if api != PROFILES[branch]['api'] or not re.search(r'Zend Module Api No:\s+' + api + r'\b', phpize_info):
         p.error('Development API mismatch: install the exact development package of this PHP.')
     for tool in ['make', 'gcc', 'objdump']:
         if not shutil.which(tool):
@@ -68,7 +69,7 @@ def main():
     src = output / 'source'
     (src / 'rfc1867').mkdir(parents=True)
     hashes = {}
-    for name in ['hp_uploadprogress_guard.c', 'config.m4', 'rfc1867/rfc1867_copy-7.4.c']:
+    for name in source_files(branch):
         source = ROOT / 'src' / name
         target = src / name
         target.write_bytes(source.read_bytes())
@@ -87,7 +88,7 @@ def main():
     load = subprocess.run([args.php, '-n', '-d', 'extension=' + str(module), '--ri', 'hp_uploadprogress_guard'],
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     text = load.stdout.decode(errors='replace')
-    if load.returncode or load.stderr or 'version => 3.1.0-fork1' not in text:
+    if load.returncode or load.stderr or ('version => ' + MODULE_VERSION) not in text:
         raise RuntimeError('The new module did not load cleanly; do not install it.')
     (output / 'module-info.txt').write_text(text)
     versions = [tuple(map(int, x.split('.'))) for x in re.findall(r'GLIBC_(\d+(?:\.\d+)+)',
@@ -95,7 +96,7 @@ def main():
     glibc = max(versions) if versions else (0,)
     if glibc > (2, 28):
         raise RuntimeError('The module requires glibc {}: do not deploy it on Debian 10. Build there.'.format(glibc))
-    manifest = {'kind': 'additional-mitigation-not-engine-patch', 'version': '3.1.0-fork1',
+    manifest = {'kind': 'additional-mitigation-not-engine-patch', 'version': MODULE_VERSION,
                 'php': info, 'php_api': api, 'config_version': config_version,
                 'module_sha256': hashlib.sha256(module.read_bytes()).hexdigest(),
                 'source_sha256': hashes, 'max_glibc_symbol': '.'.join(map(str, glibc)),

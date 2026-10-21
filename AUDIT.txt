@@ -1,9 +1,9 @@
-AUDIT DU MODULE — 22 OCTOBRE 2026 — VERSION 3.1.0-fork1
+AUDIT DU MODULE — 22 OCTOBRE 2026 — VERSION 3.1.0-fork2
 
 DÉCISION
 La piste d’une extension est techniquement utile pour réduire plusieurs chemins
 d’attaque sans reconstruire tout PHP. Le fork améliore des comportements mesurés
-sur PHP 7.4.33/mod_php. Il reste une mitigation supplémentaire : aucune preuve
+sur PHP 7.3.33 et 7.4.33/mod_php. Il reste une mitigation supplémentaire : aucune preuve
 ne permet d’affirmer qu’il remplace le correctif complet des deux CVE.
 
 PROVENANCE
@@ -76,7 +76,7 @@ CONSTATS ET CORRECTIONS
    le retour au parseur natif. Le CLI seul ne valide jamais le serveur Apache.
 
 MÉTHODE ET RÉSULTATS
-Validation finale : 103 contrôles réussis sur Debian 10 et 103 sur Debian 11,
+Validation historique fork1 : 103 contrôles réussis sur Debian 10 et 103 sur Debian 11,
 2 tests C/arithmetic (dont 10 000 combinaisons), compilation par le helper sur
 Debian 10 et contrôle du retrait du module sur un moteur 7.4.33 réellement
 corrigé. Les sources compilées sont vérifiées par empreinte contre ce dépôt.
@@ -135,7 +135,7 @@ chemin d’erreur, sans parcourir de structures de requête potentiellement inva
 
 INSTALLATEUR V1 — AJOUT DU 22 OCTOBRE 2026
 Un installateur plan/--apply et un retour arrière ont été ajoutés pour Apache.
-Le code natif du module reste identique à celui des rapports précédents.
+Lors de cet ajout sur fork1, le code natif restait identique aux rapports fork1.
 Le déploiement utilise une sonde temporaire, compare le worker au build et
 sauvegarde les configurations. Une configuration étrangère ou modifiée n’est
 pas écrasée. Le plan de rollback identifie précisément l’INI concerné.
@@ -147,3 +147,32 @@ Apache et les fichiers sont réels dans ces tests ; systemctl est remplacé
 par un shim de test appelant apache2ctl. Cela ne valide pas une unité systemd
 de production. Rapports installer-*-20261022.json et empreintes des scripts
 conservés dans audit/. Aucun service de l’hôte ou serveur de production modifié.
+
+AJOUT PHP 7.3 — FORK2
+Le point d’entrée build_php73.py construit avec phpize/php-config 7.3 et l’API
+20180731. install_php73.py cible /etc/php/7.3/apache2/conf.d et /usr/bin/php7.3.
+Les contrôles de transaction sont partagés avec 7.4, mais les manifestes et les
+parseurs restent distincts. Chaque module est compilé contre le PHP cible ;
+aucun binaire 7.4 n’est chargé dans 7.3. La version fournisseur exacte doit
+correspondre entre outils, CLI et Apache, suffixe inclus.
+
+Le parseur 7.3 a reçu les vérifications d’overflow de headroom et l’abandon
+explicite des données partielles avec HTTP 413 (nombre de parties, taille POST
+réelle ou déclarée). L’arrêt OOM, la réinitialisation SAPI et le statut sont
+communs aux deux branches. Aucun remplacement de l’allocateur Zend n’a été ajouté.
+
+Validation fork2 : PHP 7.3.33 et 7.4.33 NTS/non-debug, Apache/prefork, images
+Debian 10 figées par digest ; 103 contrôles du module et 25 contrôles de
+l’installateur pour chaque branche. Les deux helpers de build ont été exécutés
+en compte non root et produisent des modules nécessitant glibc 2.14.
+Les tests unitaires incluent les deux parseurs (10 000 cas arithmétiques chacun)
+et les transactions sur les deux branches : refus de mélange d’API, de versions
+ou de suffixes fournisseur, valeurs INI correctes et rollback.
+Rapports php73-fork2-*, php74-fork2-*, installer-php*-fork2-*, builder-php*-fork2-*
+et summary-fork2-* dans audit/. Les anciens rapports fork1 sont conservés.
+
+Les helpers acceptent aussi d’autres versions stables 7.3.x si tous les contrôles
+correspondent ; elles ne sont pas toutes validées en laboratoire. Un clone de
+l’installation fournisseur reste nécessaire. Aucun serveur cible n’a été modifié.
+L’extension reste une mitigation partielle des CVE-2026-109618/109619 : le succès
+des tests ne prouve pas que le moteur a reçu leur correctif complet.

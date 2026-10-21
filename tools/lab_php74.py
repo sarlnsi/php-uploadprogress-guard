@@ -18,6 +18,7 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 UPSTREAM = "85fdda078eaccc94e3c8e7dce64f51d99f4c8dd5"
 IMAGE = "php:7.4-apache@sha256:c9d7e608f73832673479770d66aacc8100011ec751d1905ff63fae3fe2e0ca6d"
+IMAGE73 = 'php:7.3-apache-buster@sha256:a1d6e762bce1641a3098dd737843d1322220965c6fd4030bd4f706366d9a13da'
 
 
 def command(args, timeout=180, check=True, data=None):
@@ -32,10 +33,10 @@ def docker(*args, **kwargs):
     return command(["docker"] + list(args), **kwargs)
 
 
-def source(variant, directory):
+def source(variant, directory, branch='7.4'):
     source_dir = directory / "src"
     source_dir.mkdir(parents=True)
-    for name in ["hp_uploadprogress_guard.c", "config.m4", "rfc1867/rfc1867_copy-7.4.c"]:
+    for name in ["hp_uploadprogress_guard.c", "config.m4", "rfc1867/rfc1867_copy-" + branch + ".c"]:
         target = source_dir / name
         target.parent.mkdir(parents=True, exist_ok=True)
         data = command(["git", "-C", ROOT, "show", UPSTREAM + ":src/" + name]).stdout \
@@ -44,8 +45,8 @@ def source(variant, directory):
     return source_dir
 
 
-def build(variant, directory, image):
-    src = source(variant, directory)
+def build(variant, directory, image, branch='7.4'):
+    src = source(variant, directory, branch)
     out = directory / "out"
     out.mkdir()
     script = """set -eu
@@ -122,7 +123,7 @@ def multipart(fields, file_data=b"hello\n", progress=False):
     return bytes(body), "multipart/form-data; boundary=" + boundary
 
 
-def web_cases(variant, directory, module, image, observer, python_runtime=None):
+def web_cases(variant, directory, module, image, observer, python_runtime=None, php_version='7.4.33'):
     site = directory / "site"
     site.mkdir()
     for sub in ["", "cap", "mb"]:
@@ -134,7 +135,8 @@ def web_cases(variant, directory, module, image, observer, python_runtime=None):
     token_file.write_text(uuid.uuid4().hex + uuid.uuid4().hex)
     token_file.chmod(0o644)  # Only in the private, no-network lab; production uses root:www-data 0640.
     manifest_file = directory / "probe-manifest.json"
-    manifest_file.write_text(json.dumps({'module_sha256': hashlib.sha256(module.read_bytes()).hexdigest() if module else '0'*64}))
+    manifest_file.write_text(json.dumps({'module_sha256': hashlib.sha256(module.read_bytes()).hexdigest() if module else '0'*64,
+                                         'php': {'version': php_version}}))
     ini = directory / "lab.ini"
     ini.write_text("memory_limit=32M\npost_max_size=64M\nupload_max_filesize=2M\n"
                    "session.save_path=/tmp\nsession.upload_progress.enabled=1\n"
@@ -290,24 +292,28 @@ def evaluate(report):
     return not failures
 
 
-def main():
+def main(branch='7.4'):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True, help="New private directory for binaries and reports")
-    parser.add_argument("--image", default=IMAGE)
+    parser.add_argument("--image", default=IMAGE73 if branch == '7.3' else IMAGE)
     parser.add_argument("--python-runtime", help="Optional portable Python prefix for checker integration tests")
     args = parser.parse_args()
     output = Path(args.output).resolve()
     output.mkdir(mode=0o700, parents=True)
     image_info = json.loads(docker("image", "inspect", args.image).stdout)[0]
+    php_version = docker('run', '--rm', '--network', 'none', '--cap-drop', 'ALL', args.image,
+                         'php', '-n', '-r', 'echo PHP_VERSION;').stdout.decode().strip()
+    if not php_version.startswith(branch + '.'):
+        raise RuntimeError('Image does not match selected PHP ' + branch + ' profile.')
     report = {"upstream_commit": UPSTREAM, "image": args.image, "image_id": image_info["Id"],
-              "remote_exploit_executed": False, "cli": {}, "web": {}, "module_sha256": {},
+              "php_version": php_version, "remote_exploit_executed": False, "cli": {}, "web": {}, "module_sha256": {},
               "lab_runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
     modules = {}
     for variant in ["upstream", "fork"]:
         directory = output / variant
         directory.mkdir()
         print("Building " + variant, flush=True)
-        modules[variant] = build(variant, directory, args.image) / "module.so"
+        modules[variant] = build(variant, directory, args.image, branch) / "module.so"
         report["module_sha256"][variant] = hashlib.sha256(modules[variant].read_bytes()).hexdigest()
         if variant == "fork":
             report["fork_source_sha256"] = {str(p.relative_to(directory / "src")): hashlib.sha256(p.read_bytes()).hexdigest()
@@ -330,7 +336,7 @@ def main():
             ["-d", "max_execution_time=1"] if key == "ordinary_timeout" else ())
             for key, code in cases.items()}
         report["web"][variant] = web_cases(variant, directory, module, args.image, output / "observer.so",
-            Path(args.python_runtime).resolve() if args.python_runtime else None)
+            Path(args.python_runtime).resolve() if args.python_runtime else None, php_version)
     report["invalid_mode"] = cli_case(args.image, output, modules["fork"], "echo 'MUST_NOT_RUN';",
         ["-d", "hp_uploadprogress_guard.mode=typo"])
     passed = evaluate(report)

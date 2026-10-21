@@ -11,10 +11,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class Headroom(unittest.TestCase):
+    branch = '7.4'
     @classmethod
     def setUpClass(cls):
         cls.temp = tempfile.TemporaryDirectory()
-        text = (ROOT / 'src/rfc1867/rfc1867_copy-7.4.c').read_text()
+        text = (ROOT / ('src/rfc1867/rfc1867_copy-' + cls.branch + '.c')).read_text()
         function = re.search(r'static int hp_mem_room\(size_t need\)\n\{.*?\n\}', text, re.S).group()
         fixture = r'''
 #include <stddef.h>
@@ -64,6 +65,10 @@ int check(long limit, size_t used, size_t need) {
             used = rand.choice([0, 2 << 20, rand.randrange(1 << 32), maximum - rand.randrange(1024)])
             need = rand.choice([0, 1, 2 << 20, rand.randrange(1 << 32), maximum - rand.randrange(1024)])
             self.assert_matches_math(limit, used, need)
+
+
+class HeadroomPHP73(Headroom):
+    branch = '7.3'
 
 
 if __name__ == '__main__':

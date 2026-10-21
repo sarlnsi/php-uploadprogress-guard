@@ -1,0 +1,108 @@
+{
+  "image": "php:7.3-apache-buster@sha256:a1d6e762bce1641a3098dd737843d1322220965c6fd4030bd4f706366d9a13da",
+  "php_branch": "7.3",
+  "checks": [
+    {
+      "name": "plan_succeeds",
+      "pass": true
+    },
+    {
+      "name": "plan_does_not_create_ini",
+      "pass": true
+    },
+    {
+      "name": "plan_does_not_create_backup",
+      "pass": true
+    },
+    {
+      "name": "install_succeeds",
+      "pass": true
+    },
+    {
+      "name": "one_transaction_created",
+      "pass": true
+    },
+    {
+      "name": "installed_state",
+      "pass": true
+    },
+    {
+      "name": "worker_hash_verified",
+      "pass": true
+    },
+    {
+      "name": "hooks_active",
+      "pass": true
+    },
+    {
+      "name": "ini_is_world_readable",
+      "pass": true
+    },
+    {
+      "name": "configuration_backup_exists",
+      "pass": true
+    },
+    {
+      "name": "temporary_probe_removed",
+      "pass": true
+    },
+    {
+      "name": "temporary_token_removed",
+      "pass": true
+    },
+    {
+      "name": "repeat_install_is_idempotent",
+      "pass": true
+    },
+    {
+      "name": "repeat_install_does_not_stop_apache",
+      "pass": true
+    },
+    {
+      "name": "rollback_plan_names_exact_ini",
+      "pass": true
+    },
+    {
+      "name": "rollback_plan_keeps_module_enabled",
+      "pass": true
+    },
+    {
+      "name": "manual_rollback_succeeds",
+      "pass": true
+    },
+    {
+      "name": "rollback_removes_only_managed_ini",
+      "pass": true
+    },
+    {
+      "name": "failed_start_is_reported",
+      "pass": true
+    },
+    {
+      "name": "failed_start_removes_managed_ini",
+      "pass": true
+    },
+    {
+      "name": "apache_running_after_failure",
+      "pass": true
+    },
+    {
+      "name": "temporary_probe_removed",
+      "pass": true
+    },
+    {
+      "name": "temporary_token_removed",
+      "pass": true
+    },
+    {
+      "name": "transaction_rolled_back",
+      "pass": true
+    },
+    {
+      "name": "transaction_rolled_back",
+      "pass": true
+    }
+  ],
+  "host_services_changed": false,
+  "note": "Real Apache/module/filesystem in container; systemctl is a test shim, not systemd."
+}
