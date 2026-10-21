@@ -44,6 +44,8 @@ $extensions = get_loaded_extensions(); sort($extensions);
 $guard = function_exists('hp_uploadprogress_guard_status') ? hp_uploadprogress_guard_status() : array();
 $info = array(
     'version'=>PHP_VERSION, 'sapi'=>PHP_SAPI, 'pid'=>(string)getmypid(),
+    'php_zts'=>(string)(int)PHP_ZTS, 'php_debug'=>(string)(int)PHP_DEBUG,
+    'php_word_bytes'=>(string)PHP_INT_SIZE,
     'nonce'=>$nonce, 'php_ini'=>(string)php_ini_loaded_file(),
     'scanned_ini'=>(string)php_ini_scanned_files(),
     'memory_limit'=>(string)ini_get('memory_limit'),

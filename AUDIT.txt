@@ -132,3 +132,18 @@ pour la remédiation ; l’extension ne rétablit pas le support général de PH
 Un manque de mémoire intercepté peut couper la réponse HTTP courante. Les fichiers
 temporaires restant après _exit doivent expirer par une politique extérieure au
 chemin d’erreur, sans parcourir de structures de requête potentiellement invalides.
+
+INSTALLATEUR V1 — AJOUT DU 22 OCTOBRE 2026
+Un installateur plan/--apply et un retour arrière ont été ajoutés pour Apache.
+Le code natif du module reste identique à celui des rapports précédents.
+Le déploiement utilise une sonde temporaire, compare le worker au build et
+sauvegarde les configurations. Une configuration étrangère ou modifiée n’est
+pas écrasée. Le plan de rollback identifie précisément l’INI concerné.
+Douze tests unitaires de transaction complètent les deux tests d’arithmétique.
+Vingt-cinq contrôles d’installation passent sur chacune des images Debian 10
+et 11 : succès, idempotence, plan sans mutation, rollback manuel, panne de
+démarrage simulée, reprise d’Apache et nettoyage de la sonde/du jeton.
+Apache et les fichiers sont réels dans ces tests ; systemctl est remplacé
+par un shim de test appelant apache2ctl. Cela ne valide pas une unité systemd
+de production. Rapports installer-*-20261022.json et empreintes des scripts
+conservés dans audit/. Aucun service de l’hôte ou serveur de production modifié.

@@ -1,0 +1,19 @@
+test_boundaries_and_random_inputs (test_headroom.Headroom.test_boundaries_and_random_inputs) ... ok
+test_wraparound_is_rejected (test_headroom.Headroom.test_wraparound_is_rejected) ... ok
+test_existing_foreign_ini_is_preserved (test_installer.InstallerTests.test_existing_foreign_ini_is_preserved) ... ok
+test_failed_restart_restores_previous_service (test_installer.InstallerTests.test_failed_restart_restores_previous_service) ... ok
+test_http_plaintext_remote_url_is_refused (test_installer.InstallerTests.test_http_plaintext_remote_url_is_refused) ... ok
+test_mismatched_cli_is_refused_before_stop (test_installer.InstallerTests.test_mismatched_cli_is_refused_before_stop) ... ok
+test_plan_has_no_service_or_network_mutation (test_installer.InstallerTests.test_plan_has_no_service_or_network_mutation) ... ok
+test_probe_and_token_are_cleaned_after_exception (test_installer.InstallerTests.test_probe_and_token_are_cleaned_after_exception) ... ok
+test_probe_collision_does_not_overwrite_existing_file (test_installer.InstallerTests.test_probe_collision_does_not_overwrite_existing_file) ... ok
+test_public_file_mode_is_not_lost_to_private_umask (test_installer.InstallerTests.test_public_file_mode_is_not_lost_to_private_umask) ... ok
+test_rollback_preserves_later_administrator_edit (test_installer.InstallerTests.test_rollback_preserves_later_administrator_edit) ... ok
+test_runtime_mismatch_causes_rollback (test_installer.InstallerTests.test_runtime_mismatch_causes_rollback) ... ok
+test_success_and_manual_rollback (test_installer.InstallerTests.test_success_and_manual_rollback) ... ok
+test_tampered_build_refused_before_service_changes (test_installer.InstallerTests.test_tampered_build_refused_before_service_changes) ... ok
+
+----------------------------------------------------------------------
+Ran 14 tests in 0.245s
+
+OK

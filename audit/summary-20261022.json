@@ -8,5 +8,10 @@
   "builder_on_debian10": "PASS",
   "patched_engine_skip_check": "PASS",
   "engine_patch_equivalence_proven": false,
-  "production_servers_changed": false
+  "production_servers_changed": false,
+  "installer_unit_tests_passed": 12,
+  "total_unit_tests_passed": 14,
+  "installer_checks_debian10": 25,
+  "installer_checks_debian11": 25,
+  "installer_service_control_test": "Real Apache in containers; systemctl shim invokes apache2ctl; production systemd untested"
 }

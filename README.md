@@ -1,32 +1,38 @@
-# hp_uploadprogress_guard — fork expérimental pour PHP 7.4.33
+# hp_uploadprogress_guard
 
-Dépôt privé d’étude, dérivé de [HOSTED-POWER/php_uploadprogress_guard](https://github.com/HOSTED-POWER/php_uploadprogress_guard), commit `85fdda078eaccc94e3c8e7dce64f51d99f4c8dd5`.
-Version du module : **3.1.0-fork1**. Ne pas assimiler cette extension au correctif complet du moteur PHP.
+Extension PHP native visant à **réduire certains chemins d’exploitation de CVE-2026-109618 et CVE-2026-109619**, sans reconstruire tout PHP.
 
-Le profil étudié est **Linux, PHP 7.4.33 NTS non-debug, Apache mod_php/prefork**.
-Les anciens fichiers binaires et le workflow Windows de l’amont ont été retirés de cette branche : reconstruire le module pour le PHP cible. L’historique et les licences de l’amont sont conservés.
+**Version : `3.1.0-fork1`. Profil testé : PHP 7.4.33 NTS non-debug, Linux, Apache mod_php/prefork, Debian 10 et 11 en conteneurs.** Ce fork reste une mitigation expérimentale : il ne certifie pas l’application du correctif complet au moteur PHP.
 
-## Ce qui a changé
+## CVE visées
 
-- Arrêt immédiat quand une erreur d’allocation atteint le callback, y compris pendant le code applicatif et sur un débordement de taille d’allocation.
-- Aucune tentative de parcourir la table des uploads dans ce chemin d’erreur : elle peut être incomplète. Des fichiers temporaires peuvent rester après cet arrêt.
-- Réinitialisation des pointeurs SAPI libérés **avant** le callback de désactivation suivant.
-- En PHP 7.4, réponse HTTP 413 et abandon des données partielles pour dépassement du nombre de parties, de la taille POST déclarée ou réellement lue, et du budget mémoire du parseur.
-- Calcul du budget mémoire sans débordement de `size_t`.
-- Refus d’un mode inconnu et du profil ZTS non corrigé ; sélection systématique du parseur correspondant à la branche de compilation.
-- Diagnostic `hp_uploadprogress_guard_status()` dans le worker réel et sonde administrative temporaire protégée par jeton.
+| CVE | Problème que le module essaie de mitiger | Référence officielle |
+| --- | --- | --- |
+| **CVE-2026-109618** | Un échec d’allocation mémoire peut interrompre PHP alors que des structures de requête sont partiellement initialisées. Leur traitement ultérieur peut mener à une corruption mémoire et à une exécution de code à distance. | [RCE via OOM corruption](https://github.com/php/php-src/security/advisories/GHSA-w8hw-w9fx-j79w) |
+| **CVE-2026-109619** | Un worker conserve des références à de la mémoire appartenant à une requête terminée. Une opération ultérieure peut réutiliser cet état périmé : use-after-free et possibilité d’exécution de code à distance. | [RCE via stale global state](https://github.com/php/php-src/security/advisories/GHSA-6wmf-4rv5-p3rp) |
 
-## Limites de sécurité
+## Corrections apportées au fork
 
-L’extension **n’intercepte pas directement l’allocateur Zend**. Par exemple, `zend_error_va_list()` peut traiter un état d’exception avant d’appeler le callback sur lequel repose cette mitigation. Les remises à zéro de fin de requête restent plus tardives que celles du correctif interne. Des tests réussis ne prouvent pas la couverture de tous les producteurs et consommateurs de la seconde CVE.
+Comparaison avec l’amont `85fdda078eaccc94e3c8e7dce64f51d99f4c8dd5` :
 
-Avec `mbstring.encoding_translation=On`, le module repasse par le parseur natif ; la sonde refuse ce cas dans son profil strict. Un autre module peut aussi remplacer les points d’accroche : le diagnostic vérifie leur identité dans le worker observé.
+| Changement | Comportement obtenu | CVE principalement concernée |
+| --- | --- | --- |
+| Élargissement de l’arrêt sur erreur d’allocation | Quand le diagnostic atteint le callback, le worker quitte immédiatement, y compris pendant le code applicatif. L’amont limitait cet arrêt aux moments où aucun script n’était en cours. | 109618 |
+| Suppression du nettoyage dans le chemin OOM | Aucun parcours de la table des uploads potentiellement incomplète avant `_exit(137)` ; aucun shutdown applicatif n’est appelé. | 109618, réduction d’un risque de traitement d’état invalide |
+| Gestion des débordements de taille d’allocation | Les diagnostics d’overflow d’allocation empruntent aussi ce chemin d’arrêt. Les erreurs fatales ordinaires et les timeouts gardent leur traitement normal. | 109618 |
+| Réinitialisation SAPI avancée | Les pointeurs déjà libérés sont remis à `NULL` avant le callback SAPI suivant, au lieu de le faire après son exécution. | 109619 |
+| Rejet des formulaires dépassant les limites | En PHP 7.4 : HTTP 413 et abandon des données partielles en cas de dépassement du nombre de parties, de la taille POST déclarée/réelle ou des limites du parseur. | 109618, durcissement du traitement multipart |
+| Calcul mémoire sans débordement de `size_t` | Les additions et l’arrondi du garde-fou ne peuvent plus se transformer en une acceptation par débordement arithmétique. | 109618, durcissement du garde-fou |
+| Configuration et compilation contrôlées | Mode inconnu et profil ZTS non corrigé refusés ; parseur sélectionné selon la branche ; absence de réutilisation d’un ancien binaire après échec de build. | Fiabilité du déploiement |
+| Diagnostic dans le worker réel | `hp_uploadprogress_guard_status()` et la sonde vérifient l’identité des hooks, le fichier chargé et son SHA256. | Vérification de la mitigation des deux CVE |
 
-Le [rétroportage officiel PHP 7.4](https://github.com/php/php-src/commit/712e60f9edfd03f0960fc4fc3c2c375f42b90aa2) reste la référence. La détection d’un symbole du correctif par le module est un indice, pas une attestation de l’intégralité des sources/binaries.
+Le fork conserve aussi les protections de l’amont : retrait du callback de progression des uploads, verrouillage de `session.upload_progress.enabled=0`, copie durcie du parseur multipart et remises à zéro de fin de requête. Les sessions et les uploads ordinaires restent utilisables ; le suivi de progression via les sessions PHP est neutralisé.
 
-## Construction et essai sur clone
+## Installation
 
-Lire [PROCEDURE.txt](PROCEDURE.txt) avant déploiement. La compilation ne requiert pas root et n’installe rien :
+Essayer d’abord sur un clone de l’application. Prérequis : Python >= 3.7, GCC/make/autoconf/binutils et **les outils/en-têtes de développement correspondant exactement à PHP 7.4.33**. Le script ne change aucun dépôt APT et n’installe pas de dépendances automatiquement.
+
+### 1. Construire en utilisateur non root
 
 ```sh
 python3 tools/build_php74.py \
@@ -36,24 +42,80 @@ python3 tools/build_php74.py \
   --output /var/tmp/hp-guard-build
 ```
 
-Les trois outils doivent correspondre à la même installation PHP 7.4.33. Le script vérifie l’API des en-têtes, le chargement du nouveau module et les symboles glibc ; il refuse un binaire nécessitant une glibc plus récente que celle de Debian 10.
+Cette commande produit le `.so`, son manifeste et le journal, sans installation. Elle vérifie l’API, le chargement CLI et les symboles glibc compatibles avec Debian 10. Ne pas réutiliser un binaire construit pour une autre installation.
 
-## Validation reproductible
+### 2. Examiner le plan
 
-Le laboratoire n’accepte aucune cible distante. Il utilise des conteneurs jetables sans réseau externe ni port publié. Les seules pannes provoquées sont des allocations bornées et des entrées de formulaire dans ces workers privés ; aucun exploit de RCE n’est exécuté.
+Adapter l’URL HTTPS et le chemin local d’une **nouvelle** sonde dans le DocumentRoot du même backend :
 
 ```sh
-python3 -m unittest discover -s test -p test_headroom.py -v
-
-docker pull php:7.4-apache-buster@sha256:54ab36b44088c9baa82213e8bbb54802e1c12e620afbfbf64f41e2e9b8f01211
-python3 tools/lab_php74.py --output /var/tmp/hp-guard-lab \
-  --image php:7.4-apache-buster@sha256:54ab36b44088c9baa82213e8bbb54802e1c12e620afbfbf64f41e2e9b8f01211
+python3 tools/install_php74.py install \
+  --build /var/tmp/hp-guard-build \
+  --probe-url https://VOTRE_SITE/hp-guard-probe.php \
+  --probe-file /var/www/VOTRE_SITE/hp-guard-probe.php
 ```
 
-Le laboratoire reconstruit aussi l’amont d’origine pour comparaison : garder l’historique Git, ou récupérer le commit de référence. `--python-runtime /chemin/prefixe-python-portable` ajoute le test du vérificateur HTTP à l’intérieur des conteneurs ; il attend `bin/python3` et un runtime compatible avec leur glibc.
+Sans `--apply`, aucun INI ni service n’est modifié. L’empreinte du build et les chemins prévus sont affichés ; les contrôles du serveur web sont effectués lors de l’application.
 
-Les résultats datés et leur périmètre figurent dans [AUDIT.txt](AUDIT.txt) et `audit/`. Les versions Windows, ZTS, FPM et les autres branches PHP ne font pas partie de la validation de ce fork.
+### 3. Appliquer pendant une maintenance
 
-## Licences
+```sh
+sudo python3 tools/install_php74.py install \
+  --build /var/tmp/hp-guard-build \
+  --probe-url https://VOTRE_SITE/hp-guard-probe.php \
+  --probe-file /var/www/VOTRE_SITE/hp-guard-probe.php \
+  --apply
+```
 
-Le module d’origine est sous licence MIT : [LICENSE](LICENSE). Les copies du parseur PHP sont soumises à la [PHP License 3.01](PHP-LICENSE.txt). `UPSTREAM_README.md` conserve la documentation historique de l’amont ; ses affirmations de couverture ne sont pas une certification de ce fork.
+L’installateur :
+
+1. Vérifie le build, le CLI, le PHP réellement servi par Apache et le profil de configuration.
+2. Prépare une sonde et un jeton temporaires ; refuse d’écraser un fichier existant.
+3. Sauvegarde la configuration dans `/var/backups/hp-guard/<transaction>/` et place le module sous `/opt/hp-guard/3.1.0-fork1/<empreinte>/`.
+4. Arrête Apache, crée son nouvel INI, vérifie la configuration et redémarre le service.
+5. Contrôle le `.so` chargé, son empreinte et les hooks actifs par une requête HTTP administrative.
+6. Retire la sonde et le jeton, puis conserve l’état et les journaux de la transaction.
+
+Un échec après le début du changement déclenche un retour arrière. Une installation identique déjà observée évite un nouveau redémarrage. Le script refuse une ancienne configuration étrangère ou modifiée, un pool PHP 7.4 FPM actif, un runtime différent, ainsi que les écarts au profil strict (`memory_limit=-1`, retour au parseur natif multibyte). Il ne modifie pas automatiquement ces réglages.
+
+Options utiles : `--php /chemin/php7.4`, `--ini-file /chemin/conf.d/99-hp-guard.ini`, `--web-group www-data`. Les valeurs Debian par défaut sont documentées dans [PROCEDURE.txt](PROCEDURE.txt).
+
+### Retour arrière
+
+Utiliser la transaction affichée par l’installateur :
+
+```sh
+sudo python3 tools/install_php74.py rollback \
+  --transaction /var/backups/hp-guard/TRANSACTION \
+  --apply
+```
+
+Le retour arrière retire uniquement l’INI créé par cette transaction et redémarre Apache. Il refuse d’effacer une modification administrateur ultérieure. Les sauvegardes et le binaire conservé permettent l’analyse ; le reste de la configuration n’est pas restauré aveuglément.
+
+## Limites et effets
+
+- Le module intervient par des callbacks, **après certaines opérations internes du moteur**. Il ne remplace pas l’allocateur Zend ; les remises à zéro restent parfois plus tardives que dans le correctif officiel.
+- `mbstring.encoding_translation=On` entraîne un retour au parseur natif. Le profil strict de l’installateur et du vérificateur refuse ce cas.
+- Un OOM intercepté termine le worker et peut couper la réponse HTTP courante. Des temporaires d’upload peuvent rester ; leur expiration doit être gérée hors de ce chemin d’erreur.
+- Une empreinte cohérente ou un symbole détecté ne constitue pas une certification du correctif complet. Le build et le checkout exécutés avec `sudo` doivent provenir d’une source de confiance.
+
+Le [rétroportage officiel pour PHP 7.4](https://github.com/php/php-src/commit/712e60f9edfd03f0960fc4fc3c2c375f42b90aa2) reste la référence de remédiation. Les réserves détaillées figurent dans [AUDIT.txt](AUDIT.txt). Aucun gain de couverture complète des deux CVE n’est annoncé sur la seule base des tests.
+
+## Tests et rapports
+
+- Module : **103 contrôles sur Debian 10 et 103 sur Debian 11**, PHP 7.4.33/mod_php ; 10 000 cas d’arithmétique mémoire.
+- Installateur : transactions, échecs, nettoyage, préservation des fichiers existants et retour arrière testés ; rapports dans [audit/](audit/).
+- Les laboratoires sont jetables, sans réseau externe ni port publié. Aucun exploit RCE ni test de panne n’est envoyé à un serveur de production.
+- Pour l’installateur en conteneur, Apache et les fichiers sont réels ; `systemctl` est remplacé par une simulation utilisant `apache2ctl`. Le comportement d’une unité systemd de production reste à vérifier sur clone.
+
+```sh
+python3 -m unittest discover -s test -p 'test_*.py' -v
+python3 tools/lab_php74.py --help
+python3 tools/lab_installer.py --help
+```
+
+Windows, FPM, ZTS et les autres branches PHP ne font pas partie du profil validé. Aucun binaire précompilé approuvé n’est distribué.
+
+## Origine et licences
+
+Dérivé de [HOSTED-POWER/php_uploadprogress_guard](https://github.com/HOSTED-POWER/php_uploadprogress_guard). L’historique Git est conservé. Module d’origine : [MIT](LICENSE). Copies du parseur : [PHP License 3.01](PHP-LICENSE.txt). [UPSTREAM_README.md](UPSTREAM_README.md) conserve la documentation historique de l’amont.
