@@ -1,0 +1,134 @@
+AUDIT DU MODULE — 22 OCTOBRE 2026 — VERSION 3.1.0-fork1
+
+DÉCISION
+La piste d’une extension est techniquement utile pour réduire plusieurs chemins
+d’attaque sans reconstruire tout PHP. Le fork améliore des comportements mesurés
+sur PHP 7.4.33/mod_php. Il reste une mitigation supplémentaire : aucune preuve
+ne permet d’affirmer qu’il remplace le correctif complet des deux CVE.
+
+PROVENANCE
+Amont : https://github.com/HOSTED-POWER/php_uploadprogress_guard
+Commit audité : 85fdda078eaccc94e3c8e7dce64f51d99f4c8dd5 (version 3.1.0)
+Référence PHP 7.4 :
+https://github.com/php/php-src/commit/712e60f9edfd03f0960fc4fc3c2c375f42b90aa2
+Avis officiels :
+https://github.com/php/php-src/security/advisories/GHSA-w8hw-w9fx-j79w
+https://github.com/php/php-src/security/advisories/GHSA-6wmf-4rv5-p3rp
+
+Le dépôt sarlnsi est une copie privée indépendante avec historique et origine
+upstream, car un fork GitHub natif d’un dépôt public hérite de sa visibilité.
+Aucun changement n’a été envoyé à l’amont. La publication publique reste à décider.
+
+CONSTATS ET CORRECTIONS
+
+1. Échec d’allocation pendant le code applicatif
+   L’amont ne termine immédiatement le processus que si current_execute_data est
+   NULL. Sur une allocation bornée de 32 Mio avec une limite de 16 Mio, son CLI
+   termine à 255 et exécute encore le shutdown. Sous Apache, le même worker est
+   réutilisé après le manque de mémoire applicatif.
+   Le fork supprime cette condition : dès que le diagnostic d’allocation atteint
+   le callback, sortie immédiate 137, sans shutdown applicatif. Le laboratoire
+   vérifie aussi la perte contrôlée du worker et son remplacement par Apache.
+   Le code 137 n’est pas attribué à un kill par la limite mémoire du conteneur :
+   son indicateur OOMKilled est contrôlé dans les tests CLI.
+
+2. Nettoyage risqué dans le chemin OOM
+   L’amont parcourt encore SG(rfc1867_uploaded_files) avant de quitter. Une table
+   dont l’initialisation a été interrompue n’est pas une base fiable de nettoyage.
+   Le fork appelle directement _exit, sans lire cette table ni appeler de handler.
+   Cette modification est une analyse de sûreté ; le labo ne tente pas de fabriquer
+   une table corrompue ni d’obtenir une exécution de code.
+
+3. Réinitialisation SAPI trop tardive
+   L’amont appelle le callback SAPI suivant avant de remettre ses pointeurs libérés
+   à NULL. Le fork inverse cet ordre, conformément à l’emplacement des remises à
+   zéro du rétroportage officiel.
+   Un module d’observation de test compare seulement les pointeurs à NULL ; il ne
+   déréférence aucune adresse libérée. L’observation passe de pointeurs non nuls
+   visibles sur les requêtes de test à zéro observation de ce type avec le fork.
+
+4. Limites multipart et données partielles
+   Avec un corps chunked dépassant le post_max_size d’un sous-répertoire, l’amont
+   retourne 200 et présente encore un champ partiel à l’application. Même résultat
+   de traitement partiel au dépassement du nombre de parties.
+   Le fork répond 413 et abandonne les champs/fichiers déjà parsés. Il répond aussi
+   413 lorsque la taille déclarée dépasse la limite. Les tailles normales restent
+   acceptées. Les en-têtes de partie trop longs sont aussi testés.
+
+5. Calcul du budget mémoire
+   Le calcul amont additionne des size_t sans vérifier les débordements. Le fork
+   vérifie l’arrondi puis les soustractions disponibles avant comparaison.
+   Deux tests exercent le vrai code C contre un modèle en entiers sans débordement,
+   avec cas limites et 10 000 combinaisons déterministes. Ce résultat concerne
+   l’arithmétique de ce garde-fou, pas tous les besoins d’allocation du parseur.
+
+6. Configuration, compilation et observation
+   Un mode inconnu provoque un échec de démarrage explicite. Le profil ZTS non
+   corrigé est refusé. La construction sélectionne systématiquement le parseur de
+   la branche cible, sans réutiliser une copie plate issue d’un ancien build.
+   Le helper de construction refuse root, vérifie les versions/API et la glibc,
+   et n’installe rien. Le helper de développement multi-version ne réutilise plus
+   un vieux binaire après un échec de compilation.
+   hp_uploadprogress_guard_status() décrit les hooks actifs dans le worker réel.
+   La sonde compare en plus le fichier mappé, son inode et son SHA256 au build.
+   Le contrôle reste explicitement « mitigation observée, correctif moteur non
+   attesté » et refuse le profil strict si mbstring.encoding_translation active
+   le retour au parseur natif. Le CLI seul ne valide jamais le serveur Apache.
+
+MÉTHODE ET RÉSULTATS
+Validation finale : 103 contrôles réussis sur Debian 10 et 103 sur Debian 11,
+2 tests C/arithmetic (dont 10 000 combinaisons), compilation par le helper sur
+Debian 10 et contrôle du retrait du module sur un moteur 7.4.33 réellement
+corrigé. Les sources compilées sont vérifiées par empreinte contre ce dépôt.
+
+Les rapports JSON dans audit/ fixent les images par digest, le commit amont,
+les empreintes du code compilé et les vérifications. Trois variantes sont
+reconstruites/comparées : PHP seul, amont, fork. Les résultats incluent les cas
+négatifs nécessaires à la comparaison ; toutes les variantes ne sont donc pas
+censées présenter un comportement de protection identique.
+
+Exemples de comportements observés :
+                            PHP seul       Amont          Fork
+OOM applicatif / shutdown   255 / appelé   255 / appelé   137 / non appelé
+Débordement taille alloc.   255 / appelé   255 / appelé   137 / non appelé
+Erreur fatale ordinaire     255 / appelé   255 / appelé   255 / appelé
+Worker après OOM HTTP       réutilisé      réutilisé      remplacé
+Grand champ multipart       HTTP 500       413 / vide     413 / vide
+Corps chunked > limite      200 / partiel  200 / partiel  413 / vide
+Trop de parties             200 / partiel  200 / partiel  413 / vide
+Upload et sessions normaux  fonctionnels   fonctionnels   fonctionnels
+
+Le labo utilise des conteneurs privés sans réseau externe ni port publié,
+avec limites de ressources. Il ne comporte aucune cible distante ni payload de
+RCE. Les erreurs d’allocation sont bornées, dans des processus jetables.
+L’observer C et les endpoints de test ne doivent jamais être installés sur le
+serveur. Seule la sonde administrative temporaire est destinée à l’observation
+sans exploit d’un backend réel.
+
+LIMITES QUI EMPÊCHENT DE CERTIFIER LA CORRECTION DES DEUX CVE
+
+- L’allocateur Zend n’est pas remplacé. Dans PHP 7.4, zend_error_va_list peut
+  consulter et traiter EG(exception) AVANT zend_error_cb. Arrêter depuis ce
+  callback ne reproduit donc pas le point d’arrêt interne du correctif officiel.
+- Les remises à zéro de l’exécuteur/superglobales sont effectuées dans un callback
+  de fin de requête, plus tard que dans le moteur corrigé. D’autres extensions ou
+  chemins de diagnostic peuvent intervenir dans cet intervalle ou après ce hook.
+- mbstring.encoding_translation=On conserve le parseur natif. Le parseur copié
+  n’apporte alors pas ses protections, même si l’extension est chargée.
+- Les estimations de mémoire du parseur ne constituent pas une preuve d’absence
+  d’allocation défaillante ; le système peut manquer de mémoire pour d’autres raisons.
+- Détecter un symbole du correctif ne prouve pas que tous les fichiers du moteur
+  et leurs changements ont été intégrés. La provenance du paquet reste nécessaire.
+- Les tests couvrent PHP 7.4.33 NTS non-debug/mod_php/prefork dans des conteneurs
+  Debian 10 et 11, pas votre application ni son ensemble d’extensions fournisseur.
+  Aucun test d’exploitation de RCE, revue indépendante ou preuve formelle de
+  couverture complète n’a été réalisé. Ne pas communiquer « les deux CVE corrigées »
+  sur la seule base du chargement de ce module ou du succès de cette matrice.
+
+CONCLUSION PRATIQUE
+Le fork mérite un essai sur clone lorsqu’un correctif fournisseur n’est pas
+immédiatement déployable. Le rétroportage interne officiel reste la référence
+pour la remédiation ; l’extension ne rétablit pas le support général de PHP 7.4.
+Un manque de mémoire intercepté peut couper la réponse HTTP courante. Les fichiers
+temporaires restant après _exit doivent expirer par une politique extérieure au
+chemin d’erreur, sans parcourir de structures de requête potentiellement invalides.

@@ -1,0 +1,7 @@
+test_boundaries_and_random_inputs (test_headroom.Headroom.test_boundaries_and_random_inputs) ... ok
+test_wraparound_is_rejected (test_headroom.Headroom.test_wraparound_is_rejected) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.044s
+
+OK

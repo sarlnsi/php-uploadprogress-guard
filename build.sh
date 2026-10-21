@@ -6,10 +6,12 @@
 # __isoc23_strtoll@GLIBC_2.38, which broke the v3.0 rollout: "GLIBC_2.38 not found" on Debian 12).
 # Every built file is checked and rejected if it requires anything above GLIBC_2.17 (EL7).
 #   ./build.sh 8.5 8.4 8.3 8.2 8.1 8.0 7.4 7.3 7.2 7.1 7.0 5.6
-set -u
+set -u -o pipefail
 R="$(cd "$(dirname "$0")" && pwd)"; S="$R/src"
 OUT="${HP_UPG_OUT:-$R/dist}"
 MAX_GLIBC=2.17
+mkdir -p "$OUT"
+[ "$#" -gt 0 ] || { echo "Usage: $0 <PHP minor> [...] (development helper only)"; exit 2; }
 image() {
   case "$1" in
     5.6|7.0|7.1|7.2|7.3) echo "php:$1-cli-stretch" ;;   # glibc 2.24
@@ -20,17 +22,30 @@ image() {
 }
 rc=0
 for v in "$@"; do
+  case "$v" in 5.6|7.0|7.1|7.2|7.3|7.4|8.0|8.1|8.2|8.3|8.4|8.5) ;; *) echo "Unsupported minor: $v"; exit 2;; esac
   d="$S/build-$v"; rm -rf "$d"; mkdir -p "$d"
   cp "$S/config.m4" "$S/hp_uploadprogress_guard.c" "$d/"
-  cp "$S/rfc1867/rfc1867_copy-$v.c" "$d/rfc1867_copy.c"
+  mkdir -p "$d/rfc1867"
+  cp "$S/rfc1867/rfc1867_copy-$v.c" "$d/rfc1867/rfc1867_copy-$v.c"
   img=$(image "$v")
   echo "=== $img"
-  docker run --rm -v "$d:/src:ro" -v "$OUT:/out" "$img" bash -c '
-    cp -r /src /build && cd /build && phpize >/dev/null 2>&1 && ./configure --quiet >/dev/null 2>&1 && make -s >/tmp/make.log 2>&1
+  rm -f "$OUT/hp_uploadprogress_guard-$v.so"
+  if ! docker run --rm -v "$d:/src:ro" -v "$OUT:/out" "$img" bash -c '
+    set -eu
+    cp -r /src /build
+    cd /build
+    phpize >/dev/null 2>&1
+    ./configure --quiet >/dev/null 2>&1
+    make -s >/tmp/make.log 2>&1
     grep -E "warning: |error" /tmp/make.log | grep -v shtool | head -20
     v=$(php -r "echo PHP_MAJOR_VERSION.\".\".PHP_MINOR_VERSION;")
     cp modules/hp_uploadprogress_guard.so /out/hp_uploadprogress_guard-$v.so || exit 1
-    echo "built on glibc $(ldd --version | head -1 | sed "s/.*) //") : $(php -n -d extension=/out/hp_uploadprogress_guard-$v.so --ri hp_uploadprogress_guard | grep -E "^version" | tr -s " ")"' 2>&1 | grep -vE "^$|shtool|Pulling|Pull complete|Download complete|Digest:|Status:|Unable to find image"
+    echo "built on glibc $(ldd --version | head -1 | sed "s/.*) //") : $(php -n -d extension=/out/hp_uploadprogress_guard-$v.so --ri hp_uploadprogress_guard | grep -E "^version" | tr -s " ")"' 2>&1 | grep -vE "^$|shtool|Pulling|Pull complete|Download complete|Digest:|Status:|Unable to find image"; then
+    rm -f "$OUT/hp_uploadprogress_guard-$v.so"
+    echo "$v: BUILD FAILED; stale output removed"
+    rc=1
+    continue
+  fi
   rm -rf "$d"
   so="$OUT/hp_uploadprogress_guard-$v.so"
   [ -f "$so" ] || { echo "$v: BUILD FAILED"; rc=1; continue; }

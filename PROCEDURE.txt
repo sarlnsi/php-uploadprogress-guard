@@ -1,0 +1,149 @@
+PROCÉDURE — FORK 3.1.0-fork1 — PHP 7.4.33 MOD_PHP — 22 OCTOBRE 2026
+
+PORTÉE
+Cette extension est une mitigation supplémentaire des deux CVE. Son chargement
+ne prouve pas que le moteur PHP a reçu le correctif officiel complet. Aucun
+serveur de production n’a été modifié pendant l’étude. Essayer la procédure sur
+un clone avec les extensions et les parcours applicatifs du serveur cible.
+
+Le profil validé en laboratoire est PHP 7.4.33 NTS non-debug, Linux, Apache
+prefork/mod_php, dans les images officielles Debian 10 et Debian 11. Les paquets
+Sury exacts, votre application, les autres extensions et le noyau de votre
+serveur ne sont pas reproduits par ces images. Windows, FPM et ZTS non validés.
+
+1. RÉCUPÉRER LE CODE ET LES OUTILS CORRESPONDANTS
+
+    git clone https://github.com/sarlnsi/php-uploadprogress-guard.git
+    cd php-uploadprogress-guard
+    php7.4 -v
+    phpize7.4 --version
+    php-config7.4 --version
+    apache2ctl -M
+
+Le PHP web doit aussi être vérifié à l’étape 3 : le CLI peut être différent.
+Les outils de développement doivent provenir de la même révision que PHP
+7.4.33. Si php7.4-dev manque, faire fournir le paquet exact par le fournisseur ;
+ne pas accepter une migration ou un mélange de dépôts pour obtenir phpize.
+Outils requis : Python >= 3.7, GCC, make, autoconf, objdump et en-têtes PHP.
+Les sources PHP peuvent avoir des correctifs fournisseur sans changer 7.4.33.
+
+2. COMPILER SANS INSTALLER, EN UTILISATEUR NON ROOT
+
+    python3 tools/build_php74.py --php /usr/bin/php7.4 --phpize /usr/bin/phpize7.4 --php-config /usr/bin/php-config7.4 --output /var/tmp/hp-guard-build
+
+Adapter les chemins aux outils réellement installés. Le répertoire de sortie
+doit être nouveau. La construction utilise un seul job. Elle vérifie :
+version de base 7.4.33, NTS/non-debug, API 20190902 dans les en-têtes et phpize,
+chargement CLI propre du nouveau module et symboles glibc <= 2.28 (Debian 10).
+Elle produit hp_uploadprogress_guard.so, manifest.json, module-info.txt et le
+journal. Aucun make install, changement de dépôt ou redémarrage n’a lieu.
+Ne pas utiliser les anciens .so de l’amont ; ils ont été retirés de ce fork.
+
+3. PRÉPARER LA SONDE ADMINISTRATIVE TEMPORAIRE
+
+Créer un jeton aléatoire distinct du PAT GitHub, hors du répertoire web :
+
+    sudo python3 -c 'import os,secrets; p="/etc/php-cve-audit.token"; fd=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o640); os.write(fd,(secrets.token_hex(32)+"\n").encode()); os.close(fd)'
+    sudo chown root:www-data /etc/php-cve-audit.token
+    sudo chmod 0640 /etc/php-cve-audit.token
+    sudo install -m 0644 tools/runtime-probe.php /var/www/VOTRE_SITE/hp-guard-probe.php
+
+Adapter le DocumentRoot et le groupe Apache. Si le jeton existe déjà, vérifier
+sa provenance plutôt que l’écraser. Sans le bon en-tête, la sonde renvoie 404.
+
+Lancer d’abord ce contrôle AVANT installation pour lire le runtime et ses INI :
+
+    sudo python3 tools/check_runtime.py --url https://VOTRE_SITE/hp-guard-probe.php --token-file /etc/php-cve-audit.token --manifest /var/tmp/hp-guard-build/manifest.json
+
+Avant installation, NON_VALIDE/code 2 est attendu. Vérifier dans runtime que
+version=7.4.33 (suffixe fournisseur possible) et sapi=apache2handler. Si ce n’est
+pas le cas, arrêter : vous n’avez pas compilé pour le PHP réellement servi.
+Choisir l’URL d’un backend déterminé, sans répartition aléatoire entre serveurs.
+HTTPS vérifié requis ; HTTP n’est accepté que sur loopback. Pas de redirection.
+Si /proc, open_basedir ou les permissions empêchent le contrôle, celui-ci échoue
+sans conclure à la protection ; ne pas désactiver globalement ces protections.
+
+4. SAUVEGARDER ET CHARGER SUR LE CLONE, PUIS EN MAINTENANCE
+
+Avant changement, sauvegarder /etc/php/7.4/apache2 et la configuration Apache :
+
+    sudo mkdir -m 0700 /var/backups/hp-guard-before-fork1
+    sudo tar -czf /var/backups/hp-guard-before-fork1/configuration.tar.gz -C / etc/php/7.4/apache2 etc/apache2
+
+Si le dossier existe déjà, choisir un nouveau nom. Vérifier qu’aucune autre
+configuration ne charge déjà hp_uploadprogress_guard : ne pas superposer les
+versions ni écraser une configuration existante. Installer le nouveau fichier :
+
+    sudo install -d -m 0755 /opt/hp-guard/3.1.0-fork1
+    sudo install -o root -g root -m 0644 /var/tmp/hp-guard-build/hp_uploadprogress_guard.so /opt/hp-guard/3.1.0-fork1/hp_uploadprogress_guard.so
+
+Créer un NOUVEAU /etc/php/7.4/apache2/conf.d/99-hp-guard.ini avec ces lignes :
+
+    extension=/opt/hp-guard/3.1.0-fork1/hp_uploadprogress_guard.so
+    hp_uploadprogress_guard.mode=parse
+    hp_uploadprogress_guard.detach_upload_progress=1
+    hp_uploadprogress_guard.force_unlimited_memory=0
+
+Ne pas modifier automatiquement les limites mémoire ou les autres atténuations
+déjà en place. Les essais utilisent une limite finie (32 Mio dans le labo) ;
+le vérificateur strict signale les écarts à ce profil, notamment memory_limit=-1
+et mbstring.encoding_translation=On. Un écart n’est pas une preuve d’exploitation.
+La seconde configuration utilise le parseur natif : son traitement nécessite
+une analyse spécifique de l’application. L’option force_unlimited_memory=0
+conserve la limite existante ; elle ne rétablit pas à elle seule une limite finie.
+
+Valider la configuration puis redémarrer complètement Apache :
+
+    sudo apache2ctl configtest
+    sudo systemctl restart apache2
+
+Ne redémarrer que si configtest réussit. Cette opération peut interrompre les
+requêtes en cours. Le module ne doit pas être déployé simultanément sur d’autres
+SAPIs avec cette procédure.
+
+5. VÉRIFIER DANS LE WORKER WEB RÉEL
+
+    sudo python3 tools/check_runtime.py --url https://VOTRE_SITE/hp-guard-probe.php --token-file /etc/php-cve-audit.token --manifest /var/tmp/hp-guard-build/manifest.json
+
+Résultat attendu : MITIGATION_OBSERVEE_CORRECTIF_MOTEUR_NON_ATTESTE, code 0.
+Le contrôle vérifie version, SAPI, configuration et identité des hooks actifs,
+ainsi que l’empreinte du .so chargé (mappage/inode cohérent), comparée au build.
+Un vieux worker ayant gardé un autre module ne doit pas être accepté.
+Code 2 : profil non validé ou preuves insuffisantes. Les erreurs réseau/format
+produisent un échec ; elles ne constituent jamais un résultat de sécurité positif.
+Si le moteur porte déjà un symbole du correctif, le module se met en retrait :
+vérifier alors le paquet/source fournisseur au lieu d’exiger des hooks actifs.
+
+Ces contrôles n’envoient que des GET administratifs ; aucun exploit, upload,
+OOM ou test de crash n’est envoyé au serveur. Répéter pour chaque backend/vhost.
+Valider les parcours applicatifs : authentification, formulaires, uploads,
+sessions, base de données, erreurs et traitements différés. Le suivi de
+progression des uploads par les sessions PHP est neutralisé.
+
+Retirer ensuite hp-guard-probe.php et /etc/php-cve-audit.token. Le script du
+laboratoire et son observer.c ne doivent JAMAIS être installés sur le serveur.
+
+6. RETOUR ARRIÈRE
+
+Si vous avez créé le nouveau 99-hp-guard.ini exactement comme ci-dessus, le
+retirer, puis valider et redémarrer :
+
+    sudo rm -- /etc/php/7.4/apache2/conf.d/99-hp-guard.ini
+    sudo apache2ctl configtest
+    sudo systemctl restart apache2
+
+Cela retire la mitigation. Une configuration antérieure doit être restaurée
+à partir de sa sauvegarde si elle avait été modifiée. Ne pas effacer d’autres
+INI, ni réinitialiser aveuglément toute la configuration Apache.
+
+EFFETS À ANTICIPER
+Quand le callback intercepte un échec d’allocation, le worker quitte sans
+shutdown applicatif et Apache le remplace. La requête peut se terminer sans
+réponse HTTP complète. Des fichiers temporaires d’upload peuvent rester ; leur
+expiration doit être gérée hors du chemin d’erreur, par la politique habituelle
+du serveur. Aucun parcours de mémoire potentiellement incohérente pour nettoyer.
+Les dépassements de limites du parseur durci renvoient 413 avec données partielles
+abandonnées ; ne pas supposer qu’une partie du formulaire sera encore traitée.
+
+Le correctif interne officiel ou son paquet fournisseur reste l’objectif de
+remédiation. Le module ne rétablit pas le support général de PHP 7.4/Debian 10.

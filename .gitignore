@@ -11,3 +11,6 @@ modules/
 *.o
 /rfc1867_copy.c
 run-tests.php
+__pycache__/
+*.pyc
+/lab-artifacts/

@@ -20,16 +20,17 @@
  * hp_uploadprogress_guard.force_unlimited_memory (default 0): at MINIT, set the master value of memory_limit
  *   to -1 (no limit) and lock it to PHP_INI_SYSTEM: .user.ini, .htaccess, PHP_VALUE and ini_set() cannot
  *   lower it again, so the memory_limit bailout (the longjmp CVE-2026-109618 relies on) cannot fire at
- *   all, in any parser. Bound the process with the OS instead (cgroup MemoryMax, RLIMIT_AS). Limits:
+ *   all, in any parser. This is incomplete: OS allocation failure remains possible. Do not use
+ *   RLIMIT_AS/RLIMIT_DATA as a workaround (they can induce the vulnerable allocation failure). Limits:
  *   php-fpm pool directives (php_value / php_admin_value [memory_limit]) and PHP_ADMIN_VALUE are written
  *   by FPM after this module started and take precedence; phpinfo()/--ri show the effective value.
  * All settings are PHP_INI_SYSTEM: php.ini / php-fpm.conf only, never .user.ini, .htaccess or ini_set().
  *
  * Out-of-memory exit (CVE-2026-109618 defense in depth, unpatched engines only): zend_error_cb is chained;
- * when the allocator reports "Allowed memory size exhausted" or "Out of memory" while no script is executing
- * (EG(current_execute_data) == NULL: request startup, i.e. POST parsing, or request shutdown), the process
- * calls _exit(137) after unlinking the upload temp files registered so far, exactly what the official fix
- * does past its hard memory limit. The bailout PHP would otherwise take skips the cleanup of request state,
+ * when an allocation failure reaches zend_error_cb, the process calls _exit(137), including failures
+ * during application execution. No request-owned structures are traversed for cleanup on this path.
+ * This is still a callback mitigation, not an allocator patch: engine code runs before this callback.
+ * The bailout PHP would otherwise take skips the cleanup of request state,
  * and a persistent SAPI then serves the next request with stale pointers. php-fpm already discards a worker
  * whose request startup failed (exit code 70), so this matters for mod_php, LiteSpeed, FrankenPHP and any
  * other SAPI that keeps the process, and for memory exhaustion during request shutdown on every SAPI.
@@ -72,10 +73,8 @@
 #include <io.h>
 #include <process.h>
 #include <windows.h>
-#define HP_UPG_UNLINK _unlink
 #else
 #include <unistd.h>
-#define HP_UPG_UNLINK unlink
 #endif
 
 /* Probe for the symbols only the fixed engines export (see the header comment).
@@ -100,7 +99,7 @@ extern void hp_upg_sym_delayed_oom(void) __asm__("zend_handle_delayed_oom") __at
 extern void hp_upg_sym_safe_error_ex(void) __asm__("zend_mm_safe_error_ex") __attribute__((weak));
 #endif
 
-#define HP_MPG_VERSION "3.1.0"
+#define HP_MPG_VERSION "3.1.0-fork1"
 #define HP_MPG_NAME "hp_uploadprogress_guard"
 
 /* thread-safe (ZTS) builds, PHP 7+: per-thread globals cache (no-op on NTS) */
@@ -126,45 +125,18 @@ static int hp_upg_php_patched = 0;
  * on 5.6/7.0; from 7.1 they are deferred to the VM and never interrupt request startup.) */
 static int hp_upg_is_oom_message(const char *m)
 {
-	return m && (strstr(m, "Allowed memory size") != NULL || strstr(m, "Out of memory") != NULL
-		|| strstr(m, "Maximum execution time") != NULL);
-}
-
-/* Unlink the upload temp files the parser registered so far. Runs inside the allocator's failure path, so
- * nothing here allocates; a file whose body was still being written is not registered yet and is left. */
-static void hp_upg_unlink_uploads(void)
-{
-	HashTable *ht = SG(rfc1867_uploaded_files);
-	if (!ht) {
-		return;
-	}
-#if PHP_VERSION_ID < 70000
-	{
-		HashPosition pos;
-		char *key;
-		uint klen;
-		ulong idx;
-		zend_hash_internal_pointer_reset_ex(ht, &pos);
-		while (zend_hash_get_current_key_ex(ht, &key, &klen, &idx, 0, &pos) == HASH_KEY_IS_STRING) {
-			HP_UPG_UNLINK(key);
-			zend_hash_move_forward_ex(ht, &pos);
-		}
-	}
-#else
-	{
-		zend_string *key;
-		ZEND_HASH_FOREACH_STR_KEY(ht, key) {
-			if (key) {
-				HP_UPG_UNLINK(ZSTR_VAL(key));
-			}
-		} ZEND_HASH_FOREACH_END();
-	}
-#endif
+	/* Match engine allocation diagnostics, not arbitrary text inside another fatal error.
+	 * A normal timeout is not an allocation failure and retains PHP's normal handling. */
+	return m && (strncmp(m, "Allowed memory size of ", sizeof("Allowed memory size of ") - 1) == 0
+		|| strncmp(m, "Out of memory", sizeof("Out of memory") - 1) == 0
+		|| strncmp(m, "Possible integer overflow in ", sizeof("Possible integer overflow in ") - 1) == 0);
 }
 
 static void hp_upg_oom_exit(void)
 {
-	hp_upg_unlink_uploads();
+	/* The request may be only partly initialized. Even reading its upload hash can be unsafe.
+	 * Like the official EOL backport, stop without invoking any request cleanup or shutdown hook.
+	 * Upload temporaries may remain; their expiry must be handled outside this failure path. */
 	_exit(137);
 }
 
@@ -174,7 +146,7 @@ static void (*hp_upg_orig_error_cb)(int type, zend_string *error_filename, const
 
 static void hp_upg_error_cb(int type, zend_string *error_filename, const uint32_t error_lineno, zend_string *message)
 {
-	if (type == E_ERROR && EG(current_execute_data) == NULL && message && hp_upg_is_oom_message(ZSTR_VAL(message))) {
+	if (type == E_ERROR && message && hp_upg_is_oom_message(ZSTR_VAL(message))) {
 		hp_upg_oom_exit();
 	}
 	if (hp_upg_orig_error_cb) {
@@ -187,7 +159,7 @@ static void (*hp_upg_orig_error_cb)(int type, const char *error_filename, const 
 
 static void hp_upg_error_cb(int type, const char *error_filename, const uint32_t error_lineno, zend_string *message)
 {
-	if (type == E_ERROR && EG(current_execute_data) == NULL && message && hp_upg_is_oom_message(ZSTR_VAL(message))) {
+	if (type == E_ERROR && message && hp_upg_is_oom_message(ZSTR_VAL(message))) {
 		hp_upg_oom_exit();
 	}
 	if (hp_upg_orig_error_cb) {
@@ -200,7 +172,7 @@ static void (*hp_upg_orig_error_cb)(int type, const char *error_filename, const 
 
 static void hp_upg_error_cb(int type, const char *error_filename, const unsigned int error_lineno, const char *format, va_list args)
 {
-	if (type == E_ERROR && EG(current_execute_data) == NULL && hp_upg_is_oom_message(format)) {
+	if (type == E_ERROR && hp_upg_is_oom_message(format)) {
 		hp_upg_oom_exit();
 	}
 	if (hp_upg_orig_error_cb) {
@@ -241,14 +213,16 @@ static int hp_upg_sapi_wrapped = 0;
 static int hp_upg_sapi_deactivate(void)
 {
 	int r = SUCCESS;
-	if (hp_upg_orig_sapi_deactivate) {
-		r = hp_upg_orig_sapi_deactivate();
-	}
+	/* sapi_deactivate() freed these before invoking this wrapper. Clear them before a
+	 * chained SAPI callback can emit a diagnostic, matching the official patch's ordering. */
 	SG(request_info).auth_user = NULL;
 	SG(request_info).auth_password = NULL;
 	SG(request_info).auth_digest = NULL;
 	SG(request_info).content_type_dup = NULL;
 	SG(request_info).current_user = NULL;
+	if (hp_upg_orig_sapi_deactivate) {
+		r = hp_upg_orig_sapi_deactivate();
+	}
 	return r;
 }
 
@@ -567,7 +541,22 @@ static PHP_MINIT_FUNCTION(hp_uploadprogress_guard)
 	ZEND_TSRMLS_CACHE_UPDATE();
 #endif
 	REGISTER_INI_ENTRIES();
+	{
+		const char *mode = INI_STR("hp_uploadprogress_guard.mode");
+		if (!mode || (strcasecmp(mode, "parse") != 0 && strcasecmp(mode, "native") != 0
+				&& strcasecmp(mode, "block") != 0)) {
+			php_error_docref(NULL, E_CORE_WARNING, "Invalid mode: expected parse, native or block");
+			return FAILURE;
+		}
+	}
 	hp_upg_detect_patched();
+#ifdef ZTS
+	/* The carried parser has process-static state; this fork does not claim thread safety. */
+	if (!hp_upg_php_patched) {
+		php_error_docref(NULL, E_CORE_WARNING, "This mitigation fork requires a non-thread-safe PHP build");
+		return FAILURE;
+	}
+#endif
 #ifdef HP_UPG_TEST_FORCE_PARSE
 	hp_upg_php_patched = 0; /* test builds only: exercise the carried parser on a patched engine */
 #endif
@@ -588,6 +577,9 @@ static PHP_MINIT_FUNCTION(hp_uploadprogress_guard)
 			if (sapi_register_post_entry(&hp_upg_entry) == SUCCESS) {
 #endif
 				hp_upg_installed = 1;
+			} else {
+				php_error_docref(NULL, E_CORE_WARNING, "Unable to register multipart protection");
+				return FAILURE;
 			}
 		}
 	}
@@ -643,7 +635,8 @@ static PHP_MINFO_FUNCTION(hp_uploadprogress_guard)
 		: "no");
 	php_info_print_table_row(2, "session.upload_progress handler detached", hp_upg_detached ? "yes" : "no");
 	php_info_print_table_row(2, "session.upload_progress.enabled forced to 0 and locked (PHP_INI_SYSTEM)", hp_upg_ini_forced ? "yes" : "no");
-	php_info_print_table_row(2, "out-of-memory exit (_exit(137) while no script is executing)", hp_upg_oom_hook_active ? "active" : (hp_upg_php_patched ? "not needed (engine carries the fix)" : "inactive"));
+	php_info_print_table_row(2, "allocation-failure callback exit (_exit(137), including application execution)", hp_upg_oom_hook_active ? "active" : (hp_upg_php_patched ? "not needed (engine carries the fix)" : "inactive"));
+	php_info_print_table_row(2, "coverage", "additional mitigation; not proof of the complete engine patch");
 	php_info_print_table_row(2, "stale request state cleared at request end (handlers, superglobals, request_info)", hp_upg_php_patched ? "not needed (engine carries the fix)" : (hp_upg_sapi_wrapped ? "active" : "inactive"));
 #if PHP_VERSION_ID >= 80100
 	php_info_print_table_row(2, "memory_limit lifted while OPcache compiles and stores a script", hp_upg_php_patched ? "not needed (engine carries the fix)" : (hp_upg_compile_hooked ? "active" : (zend_get_extension("Zend OPcache") ? "pending (installed on first request)" : "n/a (OPcache not loaded)")));
@@ -671,12 +664,49 @@ static const zend_module_dep hp_upg_deps[] = {
 	ZEND_MOD_END
 };
 
+#if PHP_VERSION_ID >= 70000
+/* Read-only diagnostics from the actual worker, rather than an installed .ini file.
+ * These report hook identity, not proof that the engine itself is patched. */
+ZEND_BEGIN_ARG_INFO_EX(arginfo_hp_guard_status, 0, 0, 0)
+ZEND_END_ARG_INFO()
+
+PHP_FUNCTION(hp_uploadprogress_guard_status)
+{
+	sapi_post_entry *entry;
+	if (zend_parse_parameters_none() == FAILURE) {
+		return;
+	}
+	array_init(return_value);
+	add_assoc_string(return_value, "version", HP_MPG_VERSION);
+	add_assoc_bool(return_value, "mitigation_only", 1);
+	add_assoc_bool(return_value, "engine_fix_marker_detected", hp_upg_php_patched);
+	add_assoc_string(return_value, "mode", (char *) INI_STR("hp_uploadprogress_guard.mode"));
+	entry = zend_hash_str_find_ptr(&SG(known_post_content_types), MULTIPART_CONTENT_TYPE,
+			sizeof(MULTIPART_CONTENT_TYPE) - 1);
+	add_assoc_bool(return_value, "multipart_handler_active", entry && entry->post_handler == hp_upg_dispatch);
+	add_assoc_bool(return_value, "allocation_error_callback_active",
+			hp_upg_oom_hook_active && zend_error_cb == hp_upg_error_cb);
+	add_assoc_bool(return_value, "sapi_deactivate_wrapper_active",
+			hp_upg_sapi_wrapped && sapi_module.deactivate == hp_upg_sapi_deactivate);
+	add_assoc_bool(return_value, "upload_progress_callback_absent", php_rfc1867_callback == NULL);
+}
+
+static const zend_function_entry hp_guard_functions[] = {
+	PHP_FE(hp_uploadprogress_guard_status, arginfo_hp_guard_status)
+	PHP_FE_END
+};
+#endif
+
 zend_module_entry hp_uploadprogress_guard_module_entry = {
 	STANDARD_MODULE_HEADER_EX,
 	NULL,
 	hp_upg_deps,
 	HP_MPG_NAME,
+#if PHP_VERSION_ID >= 70000
+	hp_guard_functions,
+#else
 	NULL,
+#endif
 	PHP_MINIT(hp_uploadprogress_guard),
 	PHP_MSHUTDOWN(hp_uploadprogress_guard),
 	PHP_RINIT(hp_uploadprogress_guard),

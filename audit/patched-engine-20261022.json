@@ -1,0 +1,8 @@
+{
+  "engine": "Actual isolated PHP 7.4.33 with official EOL backport 712e60f9edfd03f0960fc4fc3c2c375f42b90aa2",
+  "engine_sha256": "3d633f6e32fd0f6200e9eb1af9c76515c11b8b468fdcdad38f4118851195f838",
+  "module_sha256": "ccd94a76d964b39ede827645e83b1239c0704ad855e0189292145f2764bab674",
+  "marker_detected_and_hooks_inactive": "PASS",
+  "patched_engine_oom_exit_preserved": "PASS",
+  "production_installation": false
+}
