@@ -1,0 +1,46 @@
+name: Build legacy PHP core DEBs on native arm64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        distro: [debian10, ubuntu20.04]
+        branch: ['7.3', '7.4']
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Verify source metadata and download sources
+        working-directory: packaging/php-core-debs
+        run: python3 vendor.py --suite bullseye --source-only --output vendor/bullseye
+      - name: Build and test native arm64 packages
+        working-directory: packaging/php-core-debs
+        env:
+          PHP_DISTRO: ${{ matrix.distro }}
+          PHP_BRANCH: ${{ matrix.branch }}
+        run: |
+          python3 build_debs.py --distro "$PHP_DISTRO" --branch "$PHP_BRANCH" --arch arm64 --vendor vendor/bullseye --work output --builder default
+      - name: Retain tested packages and provenance
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: php-core-${{ matrix.distro }}-${{ matrix.branch }}-arm64
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            packaging/php-core-debs/output/result/*.deb
+            packaging/php-core-debs/output/result/*.json
+            packaging/php-core-debs/output/result/*.buildinfo
+            packaging/php-core-debs/output/result/*.changes
+            packaging/php-core-debs/output/result/build.log
+            packaging/php-core-debs/output/context/Dockerfile
+            packaging/php-core-debs/output/buildkit.log
