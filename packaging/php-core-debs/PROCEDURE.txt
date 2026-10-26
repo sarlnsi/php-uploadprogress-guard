@@ -1,0 +1,160 @@
+PAQUETS PHP 7.3 / 7.4 — CORRECTIFS MOTEUR — 26 OCTOBRE 2026
+
+PORTÉE
+Ces lots visent CVE-2026-109618 et CVE-2026-109619. Ils contiennent le moteur
+PHP corrigé, pas seulement l’extension expérimentale. Ils ne promettent pas de
+corriger toutes les anciennes vulnérabilités de PHP ou du système, et ne
+rétablissent pas le support général de PHP 7.3/7.4 ou de Debian/Ubuntu EOL.
+
+Matrice demandée : Debian 10 et 11, Ubuntu 20.04 et 22.04 ; PHP 7.3.33 et
+7.4.33 ; amd64 (x86-64) et arm64 (AArch64). Un lot distinct correspond à chaque
+combinaison. Ne jamais installer un paquet d’une autre distribution/version.
+matrix.json doit annoncer complete=true pour la livraison complète.
+
+ORIGINE DES PAQUETS
+Debian 11 / Ubuntu 22.04 : binaires Sury obtenus via un index APT signé, puis
+testés sur leur distribution. La signature porte sur les métadonnées APT ;
+les fichiers .deb ne disposent pas chacun d’une signature autonome.
+Debian 10 / Ubuntu 20.04 : reconstructions locales des sources Sury corrigées,
+contre les bibliothèques de la distribution cible, avec une révision
++sarlnsi20261026.1. Ces reconstructions ne sont pas des binaires officiels
+signés par Debian, Ubuntu ou Sury. Les empreintes vérifient leur cohérence.
+
+Les sources Sury embarquent le rétroportage « Avoid state corruption via
+bailout » : 7.3.33-35 pour 7.3 et 1:7.4.33-31 pour 7.4. Ce dernier provient
+du rétroportage minimal publié par l’équipe PHP ; 7.3 est adapté par Sury.
+Le manque de mémoire termine immédiatement le worker ; la progression des
+uploads par session est neutralisée par ce rétroportage, même si l’INI affiche
+la fonctionnalité comme activée. Les sessions et les uploads normaux sont testés.
+
+Sources, provenance, clé publique et métadonnées signées sont conservées dans
+sources/ et provenance/. Clé Sury vérifiée :
+15058500A0235D97F5D10063B188E2B695BD4743.
+Le manifeste de chaque lot identifie les fichiers, leurs versions et SHA256,
+les images moteur ELF64 et leurs empreintes, et son rapport de tests.
+
+1. CHOISIR LE LOT
+
+Sur le serveur :
+    cat /etc/os-release
+    dpkg --print-architecture
+
+Exemples de chemins après extraction de l’archive :
+    debian10-amd64/php7.3
+    debian11-arm64/php7.4
+    ubuntu20.04-amd64/php7.4
+    ubuntu22.04-arm64/php7.3
+
+Chaque lot contient packages/, éventuellement dependencies/, manifest.json
+et runtime-tests.json. Les dépendances supplémentaires ne sont pas toutes
+nécessaires à votre serveur : APT doit sélectionner celles nécessaires.
+Ne pas installer tous les fichiers avec un joker si vous ne voulez pas ajouter
+toutes les extensions/SAPI. Les scripts sont utilisables avec Python >=3.7.
+
+2. PRÉPARER LE REMPLACEMENT SUR UN CLONE
+
+Exemple : depuis la racine de l’archive, pour Debian 10 amd64/PHP 7.3 :
+
+    python3 tools/plan_install.py --bundle debian10-amd64/php7.3
+
+La commande vérifie OS/version/architecture, les empreintes et l’existence des
+remplaçants des paquets déjà installés. Elle refuse les downgrades, les lots
+non testés ou incomplets et les installations PHP multiarch. Elle sélectionne
+les paquets de source php7.3 ou php7.4 déjà installés ; les extensions PECL de
+sources indépendantes ne sont pas remplacées automatiquement.
+
+Pour préparer un dépôt local dans un NOUVEAU répertoire root :
+
+    sudo python3 tools/plan_install.py --bundle debian10-amd64/php7.3 --prepare-repository /var/tmp/php-cve-repo-73
+
+Cela copie les paquets vérifiés et génère leur index. Aucun paquet installé,
+service redémarré ou dépôt APT global modifié. trusted=yes s’applique seulement
+à ce dépôt de fichiers locaux après vérification des empreintes ; il n’est
+jamais appliqué à un dépôt distant.
+
+Le JSON affiche ensuite trois commandes :
+    repository_index_command : charger l’index dans un cache APT séparé ;
+    simulation_command : voir les changements proposés, sans installation ;
+    installation_command_after_review_and_snapshot : appliquer après revue.
+
+Exécuter l’indexation puis la simulation. Vérifier les dépendances et les
+éventuels changements hors PHP avant l’application. Une dépendance absente
+du lot et du serveur peut nécessiter les dépôts officiels correspondants ;
+ne pas forcer dpkg avec --force-depends. Le mode dépôt local utilise uniquement
+son index ; le mode sans --prepare-repository utilise vos dépôts existants.
+
+3. APPLIQUER APRÈS VALIDATION DU CLONE
+
+Prévoir un snapshot restaurable, sauvegarder la configuration et la liste
+des paquets, et choisir une maintenance. Les scripts des paquets peuvent
+redémarrer Apache ou PHP-FPM et interrompre des requêtes. Ils peuvent aussi
+mettre à jour les alternatives CLI ; relever leur état avant/après.
+
+Exécuter la commande d’installation affichée. Elle utilise --no-remove et
+--no-install-recommends. Les fichiers INI existants restent gérés par dpkg :
+examiner les éventuelles questions sur les conffiles. Le kit ne remplace pas
+aveuglément php.ini, les extensions ou les réglages Apache/FPM.
+
+Si les deux branches sont installées, traiter les deux et vérifier chaque
+vhost/pool. Un module Apache 7.3 n’est pas interchangeable avec 7.4.
+Plesk/cPanel, installations /usr/local, paquets debug absents du lot, modules
+propriétaires et ensembles de bibliothèques particuliers exigent une revue
+spécifique. Le plan refuse les remplaçants manquants au lieu de les ignorer.
+
+Pour un retour arrière fiable, restaurer le snapshot. Ce kit ne prétend pas
+restaurer un serveur arbitraire à partir d’un simple retrait du nouveau .deb :
+les anciennes versions et dépendances ne sont pas toujours téléchargeables.
+
+4. IDENTIFIER LES BINAIRES CORRIGÉS APRÈS REDÉMARRAGE
+
+Contrôle du CLI, par comparaison aux empreintes extraites des paquets :
+
+    python3 tools/verify_runtime.py --bundle debian10-amd64/php7.3 --php /usr/bin/php7.3
+
+Le CLI seul ne valide pas Apache. Pour un backend web précis, déployer
+temporairement tools/runtime-probe.php dans un nouveau fichier du DocumentRoot.
+Créer le jeton distinct de tout PAT, hors DocumentRoot, sans écraser un fichier :
+
+    sudo python3 -c 'import os,secrets; p="/etc/php-cve-audit.token"; fd=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o640); os.write(fd,(secrets.token_hex(32)+"\n").encode()); os.close(fd)'
+    sudo chown root:www-data /etc/php-cve-audit.token
+    sudo chmod 0640 /etc/php-cve-audit.token
+
+Copier la sonde sous un nouveau nom ; adapter le groupe et les chemins.
+Puis, avec HTTPS vérifié (ou HTTP loopback), sans redirection ni répartition
+aléatoire entre plusieurs serveurs :
+
+    sudo python3 tools/verify_runtime.py --bundle debian10-amd64/php7.3 --url https://VOTRE_SITE/php-core-audit.php --token-file /etc/php-cve-audit.token
+
+Résultat attendu : BINAIRE_DU_LOT_CORRIGE_IDENTIFIE. Le contrôle compare le
+moteur effectivement mappé dans le worker à l’empreinte du lot. Il vérifie
+aussi que ce mapping correspond au fichier sur disque. Une erreur ou une
+restriction de /proc/open_basedir est un contrôle non validé ; ne pas désactiver
+globalement les protections du serveur pour le faire passer.
+
+Retirer la sonde et le jeton après vérification. Redémarrer tous les workers
+concernés et répéter pour chaque backend ; une requête n’observe qu’un worker.
+Valider aussi les parcours réels : authentification, sessions, uploads,
+bases de données, tâches CLI et extensions tierces.
+
+Si l’extension expérimentale hp_uploadprogress_guard est déjà présente, son
+ancien vérificateur attend des hooks qui peuvent se mettre en retrait devant
+un moteur corrigé. Utiliser ici verify_runtime.py, qui identifie le moteur.
+Après validation du remplacement, l’extension peut être retirée par le retour
+arrière de sa propre installation. Réexaminer aussi les atténuations temporaires
+comme memory_limit=-1 pour revenir à des limites adaptées au serveur corrigé.
+
+MÉTHODE DES TESTS
+21 contrôles bornés par lot : identité CLI/Apache, symbole du moteur corrigé,
+arrêt immédiat sur OOM simple/en contexte exception/overflow, absence de shutdown
+dans ces cas, traitement des erreurs ordinaires, sérialisation, sessions,
+POST normal, upload avec contrôle SHA256, neutralisation upload-progress,
+remplacement du worker Apache après OOM. Aucun exploit RCE ni test de panne
+n’est envoyé à vos serveurs. Les tests ont lieu dans des conteneurs jetables ;
+ils ne constituent pas une validation de votre application ni une preuve
+formelle d’absence de toute autre faille.
+
+RÉFÉRENCES
+https://github.com/php/php-src/security/advisories/GHSA-w8hw-w9fx-j79w
+https://github.com/php/php-src/security/advisories/GHSA-6wmf-4rv5-p3rp
+https://github.com/php/php-src/commit/712e60f9edfd03f0960fc4fc3c2c375f42b90aa2
+https://packages.sury.org/php/
