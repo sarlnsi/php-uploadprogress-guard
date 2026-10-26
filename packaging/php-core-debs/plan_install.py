@@ -2,7 +2,7 @@
 """Verify one DEB bundle and prepare commands for its exact OS/architecture.
 
 Never installs packages, changes repositories globally, or restarts services.
-With --prepare-repository, creates a NEW local offline repository directory.
+With --prepare-repository, creates a NEW local package repository directory.
 """
 import argparse
 import hashlib
@@ -62,6 +62,27 @@ def verified_files(bundle, manifest):
     return files
 
 
+def verified_report(bundle, manifest):
+    require(manifest.get('tested_payload_matches_delivered_debs') is True,
+            'Missing tested payload proof')
+    require(manifest.get('runtime_tests_file')=='runtime-tests.json','Unexpected test report path')
+    path=bundle/'runtime-tests.json'
+    require(path.is_file() and not path.is_symlink(),'Missing or symlinked test report')
+    raw=path.read_bytes()
+    require(hashlib.sha256(raw).hexdigest()==manifest.get('runtime_tests_sha256'),
+            'Test report checksum mismatch')
+    report=json.loads(raw)
+    require(report.get('architecture')==manifest['architecture'] and
+            report.get('php_version','').startswith(manifest['php_branch']+'.'),
+            'Test report platform mismatch')
+    checks=report.get('checks',[])
+    require(len(checks)>=21 and all(c.get('pass') is True for c in checks),'Failed or incomplete test report')
+    engines=manifest.get('engine_files',{})
+    require(engines,'Missing engine payload fingerprints')
+    require(all(report.get('installed_engine_sha256',{}).get(name)==record['sha256']
+                for name,record in engines.items()),'Tested engine payload mismatch')
+
+
 def select(manifest, records, system, arch):
     require((system.get('ID'),system.get('VERSION_ID')) in SUPPORTED,'Unsupported distribution')
     require((system['ID'],system['VERSION_ID']) == (manifest['os_id'],manifest['os_version']),
@@ -90,7 +111,8 @@ def select(manifest, records, system, arch):
     return sorted(selected,key=lambda p:p['package'])
 
 
-def local_repository(directory, files):
+def local_repository(directory, files, use_system=False,
+                     system_main=Path('/etc/apt/sources.list'), system_parts=Path('/etc/apt/sources.list.d')):
     require(directory.is_absolute() and not directory.exists(),'Use a NEW absolute repository directory')
     directory.mkdir(mode=0o755)
     os.chmod(str(directory),0o755)
@@ -113,8 +135,19 @@ def local_repository(directory, files):
     (directory/'sources.list').write_text('deb [trusted=yes] '+uri+' ./\n')
     (directory/'sources.list').chmod(0o644)
     (directory/'lists').mkdir(mode=0o755)
+    parts='-'
+    if use_system:
+        linked=directory/'sources.parts';linked.mkdir(mode=0o755)
+        # Keep the original access controls of any credentialed sources; never copy their contents.
+        if system_main.is_file():
+            (linked/'00-system-main.list').symlink_to(system_main.resolve())
+        if system_parts.is_dir():
+            for source in system_parts.iterdir():
+                if source.is_file() and source.suffix in ('.list','.sources'):
+                    (linked/('01-system-'+source.name)).symlink_to(source.resolve())
+        parts=str(linked)
     return ['-o','Dir::Etc::sourcelist='+str(directory/'sources.list'),
-            '-o','Dir::Etc::sourceparts=-','-o','Dir::State::lists='+str(directory/'lists'),
+            '-o','Dir::Etc::sourceparts='+parts,'-o','Dir::State::lists='+str(directory/'lists'),
             '-o','Dir::Cache::pkgcache='+str(directory/'pkgcache.bin'),
             '-o','Dir::Cache::srcpkgcache='+str(directory/'srcpkgcache.bin')]
 
@@ -127,23 +160,29 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--bundle',required=True)
     p.add_argument('--prepare-repository',help='Optional NEW absolute directory, preferably /var/tmp/php-cve-repo')
+    p.add_argument('--use-system-repositories',action='store_true',
+                   help='Include existing system sources too, without modifying or copying their content')
     args=p.parse_args()
+    if args.use_system_repositories and not args.prepare_repository:
+        p.error('--use-system-repositories requires --prepare-repository')
     bundle=Path(args.bundle).resolve(strict=True)
     manifest=json.loads((bundle/'manifest.json').read_text())
     # Avoid Path.is_relative_to, which is unavailable on Debian 10 Python 3.7.
     files=verified_files(bundle,manifest)
+    verified_report(bundle,manifest)
     arch=subprocess.check_output(['dpkg','--print-architecture']).decode().strip()
     chosen=select(manifest,inventory(),os_info(),arch)
     options=[]
     preparation=None
     if args.prepare_repository:
-        options=local_repository(Path(args.prepare_repository),files)
+        options=local_repository(Path(args.prepare_repository),files,args.use_system_repositories)
         preparation=shell(['sudo','apt-get']+options+['update'])
     targets=[r['package']+'='+r['new_version'] for r in chosen] if options else [str(bundle/r['file']) for r in chosen]
     command=['sudo','apt-get']+options+['--no-remove','--no-install-recommends']
     print(json.dumps({'scope':'Replacement plan only; no package installed and no service changed',
                       'cves':['CVE-2026-109618','CVE-2026-109619'],'selection':chosen,
                       'repository_index_command':preparation,
+                      'using_system_repositories':args.use_system_repositories or not bool(options),
                       'simulation_command':shell(command+['--simulate','install']+targets),
                       'installation_command_after_review_and_snapshot':shell(command+['install']+targets),
                       'note':'The optional local repository contains verified dependencies. No global source list is changed. '

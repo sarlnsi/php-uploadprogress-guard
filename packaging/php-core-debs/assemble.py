@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tarfile
@@ -13,6 +14,7 @@ from vendor import paragraphs
 
 ROOT=Path(__file__).resolve().parent
 ENGINES=['usr/bin/php{v}','usr/bin/php-cgi{v}','usr/sbin/php-fpm{v}',
+         'usr/lib/cgi-bin/php{v}',
          'usr/lib/apache2/modules/libphp{v}.so','usr/lib/libphp{v}.so',
          'usr/bin/phpdbg{v}','usr/bin/lsphp{v}']
 
@@ -25,9 +27,17 @@ def fields(path):
     return next(paragraphs(subprocess.check_output(['dpkg-deb','--field',str(path)]).decode()))
 
 
+def canonical_filename(control):
+    name=control['Package'];version=control['Version'].split(':',1)[-1];arch=control['Architecture']
+    if not re.fullmatch('[a-z0-9][a-z0-9+.-]+',name) or not re.fullmatch('[A-Za-z0-9.+~:-]+',version) or not re.fullmatch('[a-z0-9]+',arch):
+        raise ValueError('Unsafe Debian package identity')
+    return name+'_'+version+'_'+arch+'.deb'
+
+
 def package(path, target_dir, relative):
     control=fields(path)
-    destination=target_dir/relative/path.name
+    filename=canonical_filename(control)
+    destination=target_dir/relative/filename
     destination.parent.mkdir(parents=True,exist_ok=True)
     if not destination.exists():
         shutil.copyfile(str(path),str(destination))
@@ -36,7 +46,7 @@ def package(path, target_dir, relative):
         raise RuntimeError('Existing delivery file differs')
     return {'package':control['Package'],'version':control['Version'],'architecture':control['Architecture'],
             'source':control.get('Source',control['Package']), 'depends':control.get('Depends',''),
-            'file':str(Path(relative)/path.name),'sha256':digest,'size':path.stat().st_size}
+            'file':str(Path(relative)/filename),'sha256':digest,'size':path.stat().st_size}
 
 
 def engine_files(debs, branch, architecture):
@@ -93,9 +103,20 @@ def assemble(work, destination, partial=False):
                     raise RuntimeError('Invalid runtime test report')
                 target=destination/(distro+'-'+arch)/('php'+branch)
                 target.mkdir(parents=True,exist_ok=True)
+                previous=json.loads((target/'manifest.json').read_text()) if (target/'manifest.json').exists() else {}
                 debs=sorted(result.glob('*.deb')) if local else sorted((work/'vendor'/suite/'binaries'/arch/('php'+branch)).glob('*.deb'))
                 packages=[package(p,target,'packages') for p in debs]
-                dependencies=[package(p,target,'dependencies') for p in sorted((result/'dependencies').glob('*.deb'))]
+                core_names={r['package'] for r in packages}
+                dependencies=[package(p,target,'dependencies') for p in sorted((result/'dependencies').glob('*.deb'))
+                              if fields(p)['Package'] not in core_names]
+                retained={r['file'] for r in packages+dependencies}
+                # Remove only our own previously recorded copies, never unknown or edited files.
+                for old in previous.get('packages',[])+previous.get('dependencies',[]):
+                    relative=Path(old['file'])
+                    if relative.is_absolute() or '..' in relative.parts or old['file'] in retained: continue
+                    old_path=target/relative
+                    if target in old_path.resolve().parents and old_path.is_file() and not old_path.is_symlink() and sha(old_path)==old['sha256']:
+                        old_path.unlink()
                 manifest={'schema':1,'date':'2026-10-26','os_id':'debian' if distro.startswith('debian') else 'ubuntu',
                           'os_version':distro.replace('debian','',1).replace('ubuntu','',1),
                           'architecture':arch,'php_branch':branch,
@@ -108,10 +129,23 @@ def assemble(work, destination, partial=False):
                           'source_provenance':'../../provenance/'+suite+'/provenance.json',
                           'production_installation_performed':False,
                           'scope':'Backported engine fix for the listed two CVEs; not all historical PHP/system vulnerabilities or renewed maintenance.'}
+                actual=tests.get('installed_engine_sha256',{})
+                if actual:
+                    for filename,record in manifest['engine_files'].items():
+                        if actual.get(filename)!=record['sha256']:
+                            raise RuntimeError('Tested installed engine differs from delivered DEB: '+filename)
+                    manifest['tested_payload_matches_delivered_debs']=True
+                elif not partial:
+                    raise RuntimeError('Missing installed engine hashes in test report')
                 if local:
                     proof=result/'source-proof.json'
                     shutil.copyfile(str(proof),str(target/proof.name))
                     manifest['source_proof_sha256']=sha(proof)
+                    manifest['withheld_packages']=['php'+branch+'-litespeed']
+                    recipe=result.parent/'Dockerfile.apache-fpm'
+                    if recipe.exists():
+                        shutil.copyfile(str(recipe),str(target/'build-recipe.Dockerfile'))
+                        manifest['build_recipe_sha256']=sha(recipe)
                 shutil.copyfile(str(report),str(target/report.name))
                 (target/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
                 rows.append({'distro':distro,'arch':arch,'branch':branch,'bundle':str(target.relative_to(destination)),

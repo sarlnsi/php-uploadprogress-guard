@@ -31,7 +31,9 @@ Sources, provenance, clé publique et métadonnées signées sont conservées da
 sources/ et provenance/. Clé Sury vérifiée :
 15058500A0235D97F5D10063B188E2B695BD4743.
 Le manifeste de chaque lot identifie les fichiers, leurs versions et SHA256,
-les images moteur ELF64 et leurs empreintes, et son rapport de tests.
+les images moteur ELF64 et leurs empreintes, et son rapport de tests. Les
+empreintes des moteurs installés dans les tests correspondent aux charges utiles
+des .deb livrés ; le planificateur vérifie aussi ce rapport et sa cohérence.
 
 1. CHOISIR LE LOT
 
@@ -65,7 +67,7 @@ sources indépendantes ne sont pas remplacées automatiquement.
 
 Pour préparer un dépôt local dans un NOUVEAU répertoire root :
 
-    sudo python3 tools/plan_install.py --bundle debian10-amd64/php7.3 --prepare-repository /var/tmp/php-cve-repo-73
+    sudo python3 tools/plan_install.py --bundle debian10-amd64/php7.3 --prepare-repository /var/tmp/php-cve-repo-73 --use-system-repositories
 
 Cela copie les paquets vérifiés et génère leur index. Aucun paquet installé,
 service redémarré ou dépôt APT global modifié. trusted=yes s’applique seulement
@@ -80,8 +82,11 @@ Le JSON affiche ensuite trois commandes :
 Exécuter l’indexation puis la simulation. Vérifier les dépendances et les
 éventuels changements hors PHP avant l’application. Une dépendance absente
 du lot et du serveur peut nécessiter les dépôts officiels correspondants ;
-ne pas forcer dpkg avec --force-depends. Le mode dépôt local utilise uniquement
-son index ; le mode sans --prepare-repository utilise vos dépôts existants.
+ne pas forcer dpkg avec --force-depends. --use-system-repositories permet à APT
+de les résoudre dans les dépôts déjà configurés, via des liens temporaires qui
+ne copient pas d’éventuels identifiants privés. Sans cette option, le dépôt
+local utilise uniquement son index ; sans --prepare-repository, APT utilise
+vos dépôts existants. Aucun de ces modes ne modifie les sources globales.
 
 3. APPLIQUER APRÈS VALIDATION DU CLONE
 
@@ -155,6 +160,43 @@ remplacement du worker Apache après OOM. Aucun exploit RCE ni test de panne
 n’est envoyé à vos serveurs. Les tests ont lieu dans des conteneurs jetables ;
 ils ne constituent pas une validation de votre application ni une preuve
 formelle d’absence de toute autre faille.
+
+RECONSTRUIRE / REJOUER LES TESTS
+
+Prérequis sur une machine de construction distincte : Python >=3.7, GnuPG,
+Docker et Buildx. Ne pas lancer les compilations sur un serveur de production.
+Utiliser de préférence un hôte natif par architecture ; ARM64 sous émulation
+est beaucoup plus lent. Le constructeur docker-container inclut son émulateur
+BuildKit ; le kit ne modifie pas binfmt_misc du noyau hôte.
+
+    docker buildx create --name php-cve-debs-20261026 --driver docker-container
+    docker buildx inspect --builder php-cve-debs-20261026 --bootstrap
+    python3 tools/vendor.py --suite bullseye --output vendor/bullseye
+    python3 tools/vendor.py --suite jammy --output vendor/jammy
+
+Le téléchargeur refuse une signature, une empreinte ou des métadonnées
+périmées/inattendues. Il est fixé aux révisions corrigées étudiées ici ;
+si le fournisseur les retire, conserver les sources et preuves du lot plutôt
+que supprimer les contrôles. Exemple de reconstruction Debian 10 amd64 :
+
+    python3 tools/build_debs.py --distro debian10 --branch 7.3 --arch amd64 --vendor vendor/bullseye --work builds/debian10-php73-amd64
+
+Même commande avec ubuntu20.04 et/ou 7.4 et/ou arm64 pour les autres anciens OS.
+Pour tester les binaires fournisseur Debian 11/Ubuntu 22.04 :
+
+    python3 tools/validate_vendor.py --suite bullseye --branch 7.3 --arch amd64 --vendor vendor/bullseye --work validations/bullseye-php73-amd64
+
+Utiliser jammy pour Ubuntu 22.04. Rejouer pour les deux branches et architectures.
+Après les 16 validations, depuis le répertoire contenant builds/validations/vendor :
+
+    python3 tools/assemble.py --work . --output livraison
+
+Les sources/signatures conservées sont celles utilisées lors de cette livraison ;
+les dépôts des OS et outils de compilation peuvent évoluer. Les builds sont
+traçables, sans promesse de reconstruction future identique octet par octet.
+La suite locale du planificateur se lance depuis tools/ :
+
+    python3 -m unittest -v test_kit.py
 
 RÉFÉRENCES
 https://github.com/php/php-src/security/advisories/GHSA-w8hw-w9fx-j79w

@@ -10,6 +10,7 @@ import secrets
 import subprocess
 import urllib.parse
 import urllib.request
+from plan_install import verified_report
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -61,7 +62,9 @@ def main():
         p.error('Specify --php and/or --url; CLI alone does not attest Apache')
     if args.url and not args.token_file:
         p.error('--url requires --token-file')
-    manifest=json.loads((Path(args.bundle)/'manifest.json').read_text())
+    bundle=Path(args.bundle).resolve(strict=True)
+    manifest=json.loads((bundle/'manifest.json').read_text())
+    verified_report(bundle,manifest)
     if manifest.get('runtime_tests_passed') is not True:
         raise RuntimeError('No passed runtime tests in manifest')
     digests={r['sha256'] for r in manifest['engine_files'].values()}

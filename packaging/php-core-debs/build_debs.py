@@ -5,7 +5,9 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
+from payload_checks import CODE as PAYLOAD_CODE
 
 ROOT = Path(__file__).resolve().parent
 BASES = {
@@ -79,6 +81,8 @@ COPY --from=build /out/ /
 '''
     for key,val in [('BASE',BASES[args.distro]),('ARCHIVE_SETUP',archive_setup),('DSC',dsc),('DPKG_JOBS',dpkg_jobs),('JOBS',jobs),('BRANCH',args.branch)]:
         dockerfile=dockerfile.replace(key,val)
+    dockerfile=dockerfile.replace('FROM scratch AS result',
+        'RUN --network=none python3 -c '+shlex.quote('exec('+repr(PAYLOAD_CODE)+')')+'\nFROM scratch AS result')
     (context/'Dockerfile').write_text(dockerfile)
     result=work/'result'
     command=['docker','buildx','build','--builder',args.builder,'--platform','linux/'+args.arch,
