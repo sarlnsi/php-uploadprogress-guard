@@ -138,14 +138,25 @@ def assemble(work, destination, partial=False):
                 elif not partial:
                     raise RuntimeError('Missing installed engine hashes in test report')
                 if local:
+                    if not partial and tests.get('patched_source_preserved_during_build') is not True:
+                        raise RuntimeError('Missing post-compilation source consistency proof')
                     proof=result/'source-proof.json'
                     shutil.copyfile(str(proof),str(target/proof.name))
                     manifest['source_proof_sha256']=sha(proof)
                     manifest['withheld_packages']=['php'+branch+'-litespeed']
-                    recipe=result.parent/'Dockerfile.apache-fpm'
-                    if recipe.exists():
-                        shutil.copyfile(str(recipe),str(target/'build-recipe.Dockerfile'))
-                        manifest['build_recipe_sha256']=sha(recipe)
+                recipes=[result.parent/'Dockerfile.payload-proof',result.parent/'Dockerfile.apache-fpm',
+                         result.parent/'context/Dockerfile']
+                recipe=next((p for p in recipes if p.is_file()),None)
+                if recipe:
+                    shutil.copyfile(str(recipe),str(target/'build-recipe.Dockerfile'))
+                    manifest['build_recipe_sha256']=sha(recipe)
+                records=[]
+                for name in ('*.buildinfo','*.changes','build.log','installed-packages.txt'):
+                    for path in sorted(result.glob(name)):
+                        dest=target/'build-info'/path.name;dest.parent.mkdir(exist_ok=True)
+                        shutil.copyfile(str(path),str(dest))
+                        records.append({'file':str(dest.relative_to(target)),'sha256':sha(path)})
+                manifest['build_records']=records
                 shutil.copyfile(str(report),str(target/report.name))
                 (target/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
                 rows.append({'distro':distro,'arch':arch,'branch':branch,'bundle':str(target.relative_to(destination)),

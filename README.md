@@ -161,11 +161,13 @@ python3 tools/lab_php73.py --help
 python3 tools/lab_installer.py --help
 ```
 
-Windows, FPM, ZTS et les branches autres que 7.3/7.4 ne font pas partie du profil validé. Aucun binaire précompilé approuvé n’est distribué. Conserver tout le répertoire `tools/` : les points d’entrée 7.3 et 7.4 partagent des contrôles internes.
+Windows, FPM, ZTS et les branches autres que 7.3/7.4 ne font pas partie du profil validé. Pour l’extension expérimentale, aucun binaire précompilé approuvé n’est distribué. Conserver tout le répertoire `tools/` : les points d’entrée 7.3 et 7.4 partagent des contrôles internes.
 
 ## Paquets de remplacement du moteur PHP
 
-Les [outils de paquets DEB](packaging/php-core-debs/PROCEDURE.txt) préparent et vérifient des remplacements du moteur pour PHP 7.3/7.4, Debian 10/11 et Ubuntu 20.04/22.04, amd64/arm64. Ils utilisent les sources corrigées du fournisseur, indépendamment de ce module expérimental. La construction de la matrice binaire est en cours ; seuls les lots disposant d’un rapport de tests réussi sont assemblés. Le plan d’installation ne change aucun service et sélectionne les paquets PHP déjà installés.
+Les [outils de paquets DEB](packaging/php-core-debs/PROCEDURE.txt) préparent et vérifient des remplacements du moteur pour PHP 7.3/7.4, Debian 10/11 et Ubuntu 20.04/22.04, amd64/arm64. Ils utilisent les sources corrigées du fournisseur, indépendamment de ce module expérimental. Les livraisons sont organisées en huit archives par OS et architecture, chacune contenant les deux branches. Une livraison complète exige 16 lots validés : 21 contrôles par lot, correspondance des empreintes des moteurs installés avec les `.deb`, et vérification des sources corrigées avant/après compilation locale. Deux tests de remplacement depuis les PHP stock vérifient aussi la conservation des INI et de Redis.
+
+Le plan d’installation ne change aucun service et sélectionne les paquets PHP déjà installés ; ses 22 tests couvrent les erreurs de plate-forme, les empreintes, les remplaçants manquants et les rapports de tests modifiés. Apache/mod_php, CLI et FPM sont inclus ; LiteSpeed est exclu des reconstructions Debian 10/Ubuntu 20.04. Les deux CVE sont la portée du correctif, sans renouvellement du support général de ces versions anciennes. Les archives validées et leurs sommes SHA256 sont destinées aux Releases de ce dépôt, qui reste privé.
 
 ## Origine et licences
 
