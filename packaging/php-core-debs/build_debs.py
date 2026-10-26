@@ -71,7 +71,7 @@ ENV DEB_BUILD_OPTIONS="parallel=JOBS noautodbgsym" SOURCE_DATE_EPOCH=1792972800
 RUN --network=none dpkg-buildpackage -b -us -uc DPKG_JOBS > /work/build.log 2>&1 || { tail -100 /work/build.log; exit 1; }
 USER root
 RUN mkdir /out && cp /work/*.deb /work/*.buildinfo /work/*.changes /work/build.log /work/source-proof.json /out/
-RUN apt-get install -y --no-install-recommends apache2 binutils curl /out/*.deb
+RUN mkdir -p /work/withheld && mv /out/php*-litespeed_*.deb /work/withheld/ && apt-get install -y --no-install-recommends apache2 binutils curl /out/*.deb
 ENV PHP_CORE_DISPOSABLE_TEST=1
 RUN --network=none python3 /input/core_test.py --branch BRANCH --output /out/runtime-tests.json
 FROM scratch AS result

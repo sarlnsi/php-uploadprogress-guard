@@ -100,6 +100,9 @@ vhost/pool. Un module Apache 7.3 n’est pas interchangeable avec 7.4.
 Plesk/cPanel, installations /usr/local, paquets debug absents du lot, modules
 propriétaires et ensembles de bibliothèques particuliers exigent une revue
 spécifique. Le plan refuse les remplaçants manquants au lieu de les ignorer.
+LiteSpeed n’est pas livré pour Debian 10/Ubuntu 20.04 : son script fournisseur
+ne passe pas l’installation sur ces anciennes bases. Le plan refusera une
+installation existante qui nécessiterait ce paquet ; Apache/CLI/FPM sont la cible.
 
 Pour un retour arrière fiable, restaurer le snapshot. Ce kit ne prétend pas
 restaurer un serveur arbitraire à partir d’un simple retrait du nouveau .deb :
